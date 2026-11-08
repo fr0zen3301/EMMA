@@ -1,5 +1,7 @@
+#include "Calendar.hpp"
 #include "Camera.hpp"
 #include "Constants.hpp"
+#include "Horizons.hpp"
 #include "Renderer.hpp"
 #include "Simulation.hpp"
 #include "Ui.hpp"
@@ -7,9 +9,13 @@
 #include "imgui-SFML.h"
 #include <SFML/Graphics.hpp>
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <filesystem>
+#include <future>
 #include <optional>
+#include <string>
 #include <vector>
 
 namespace {
@@ -47,13 +53,48 @@ int main(int argc, char** argv) {
         camera.viewport = sf::FloatRect({SIDEBAR_WIDTH, 0.f},
                                         {std::max(1.f, w - SIDEBAR_WIDTH), std::max(1.f, h - STATUS_HEIGHT)});
     };
+    // Where the solar system starts: today's positions from JPL Horizons when we
+    // have them, otherwise the last ones saved, otherwise the J2000 orbital elements
+    const double today = calendar::startOfDay(calendar::julianDayNow());
+    const std::filesystem::path cachePath = horizons::defaultCachePath();
+    std::optional<SolarSnapshot> solarStart = horizons::loadCache(cachePath);
+    std::atomic<int> fetchProgress{0};
+    std::atomic<bool> fetchCancel{false};
+    // Declared after the atomics it uses, so it is destroyed first: its destructor
+    // waits for a running download, which still reads them until it stops
+    std::future<horizons::Result> fetch;
+    bool pausedForFetch = false;
+    unsigned long long changesAtFetch = 0;
+    std::string sourceNote;
+    bool canRetry = false;
+
     auto loadPreset = [&](Preset preset) {
-        sim.load(preset);
+        sim.load(preset, preset == Preset::SolarSystem && solarStart ? &*solarStart : nullptr);
         camera.fit(sim.viewRadius());
         state.timeScale = static_cast<float>(sim.suggestedTimeScale());
     };
+    auto describeStart = [&]() -> std::string {
+        if (!solarStart) return "Mean orbits for 1 January 2000.";
+        return "Positions for " + calendar::date(solarStart->julianDay) + " from JPL Horizons.";
+    };
+    auto startFetch = [&]() {
+        fetchProgress = 0;
+        fetchCancel = false;
+        fetch = std::async(std::launch::async, horizons::fetchSolarSystem, today, &fetchProgress, &fetchCancel);
+        canRetry = false;
+        changesAtFetch = sim.changeCount();
+        if (sim.preset() == Preset::SolarSystem && !state.paused) {
+            state.paused = true;  // hold the old positions still until today's arrive
+            pausedForFetch = true;
+        }
+    };
+
     layout(window.getSize());
     loadPreset(Preset::SolarSystem);
+    if (solarStart && solarStart->julianDay == today)
+        sourceNote = describeStart();  // already downloaded today
+    else
+        startFetch();
 
     // Input state
     bool pressing = false, dragging = false, panning = false;
@@ -174,6 +215,31 @@ int main(int argc, char** argv) {
             state.angle = static_cast<float>(angle);
         }
 
+        // ------------------------------------------------------------------ JPL Horizons
+        if (fetch.valid()) {
+            if (fetch.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+                horizons::Result result = fetch.get();
+                if (result.ok) {
+                    solarStart = result.snapshot;
+                    horizons::saveCache(cachePath, *solarStart);
+                    // Swap in today's positions, unless the scene changed while we waited
+                    if (sim.preset() == Preset::SolarSystem && sim.changeCount() == changesAtFetch) {
+                        sim.load(Preset::SolarSystem, &*solarStart);
+                        accumulatorDays = 0.0;
+                    }
+                    sourceNote = describeStart();
+                } else {
+                    sourceNote = "Couldn't reach JPL Horizons: " + result.error + ". " + describeStart();
+                    canRetry = true;
+                }
+                if (pausedForFetch && state.paused) state.paused = false;
+                pausedForFetch = false;
+            } else {
+                sourceNote = "Getting today's positions from JPL Horizons (" + std::to_string(fetchProgress.load()) +
+                             " of " + std::to_string(SOLAR_BODY_COUNT) + ")...";
+            }
+        }
+
         // ------------------------------------------------------------------ interface
         const sf::Vector2u size = window.getSize();
         const float width = static_cast<float>(size.x), height = static_cast<float>(size.y);
@@ -184,6 +250,8 @@ int main(int argc, char** argv) {
         stats.momentumDrift = momentumDrift;
         stats.driftHistory = &driftHistory;
         stats.behind = behindTimer > 0.f;
+        stats.sourceNote = sourceNote;
+        stats.canRetry = canRetry && !fetch.valid();
         ui::drawSidebar(state, stats, sim.preset(), SIDEBAR_WIDTH, height - STATUS_HEIGHT);
         ui::drawStatusBar(sim, camera, mouse, state, height - STATUS_HEIGHT, width, STATUS_HEIGHT);
 
@@ -205,10 +273,16 @@ int main(int argc, char** argv) {
             camera.fit(sim.viewRadius());
             state.resetViewRequested = false;
         }
+        if (state.retryFetchRequested) {
+            state.retryFetchRequested = false;
+            if (!fetch.valid()) startFetch();
+        }
 
         // ------------------------------------------------------------------ physics
         // Fixed steps, as many as the chosen speed needs. The frame time is capped so a
         // stall (dragging the window on Windows pauses the loop) can't snowball.
+        // At slow speeds, one step per frame, so bodies glide instead of jumping
+        sim.limitStep(static_cast<double>(state.timeScale) / 60.0);
         if (!state.paused)
             accumulatorDays += std::min(frameDt, MAX_FRAME_DT) * static_cast<double>(state.timeScale);
         else if (state.stepRequested)
@@ -292,6 +366,7 @@ int main(int argc, char** argv) {
         window.display();
     }
 
+    fetchCancel = true;  // a running download stops after its current request
     ImGui::SFML::Shutdown();
     return 0;
 }

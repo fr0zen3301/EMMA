@@ -2,11 +2,25 @@
 #define SIMULATION_HPP
 
 #include "Body.hpp"
+#include "Constants.hpp"
 #include "QuadTree.hpp"
+#include <array>
 #include <cstddef>
 #include <vector>
 
 enum class Preset { SolarSystem = 0, AlphaCentauri = 1, Empty = 2 };
+
+// The solar system preset's bodies, in this order:
+// Sun, Mercury, Venus, Earth, Moon, Mars, Jupiter, Saturn, Uranus, Neptune
+constexpr std::size_t SOLAR_BODY_COUNT = 10;
+
+// Measured starting state for the solar system (AU and AU/day, ecliptic plane).
+// Any origin works: load() moves everything to the barycenter.
+struct SolarSnapshot {
+    double julianDay = 0.0;  // UTC
+    std::array<Vector2D, SOLAR_BODY_COUNT> position;
+    std::array<Vector2D, SOLAR_BODY_COUNT> velocity;
+};
 
 struct MergeFlash {
     Vector2D position;
@@ -22,12 +36,15 @@ public:
     static constexpr double ETA = 0.03;              // longest piece of a step, as a fraction of the tightest dynamical time
     static constexpr int MAX_SUBSTEPS = 4096;        // most pieces one step can be split into
     static constexpr std::size_t DIRECT_LIMIT = 64;  // up to this many bodies, exact pairwise forces
-    static constexpr std::size_t MAX_TRAIL = 720;    // samples per trail (about two orbits)
+    static constexpr std::size_t MAX_TRAIL = 540;    // points per trail: three full turns
+    static constexpr double TRAIL_TURN = 2.0 * units::DEG;  // a new trail point after this much turning
 
-    void load(Preset preset);
+    // With a snapshot, the solar system starts from it; without, from the J2000 orbital elements
+    void load(Preset preset, const SolarSnapshot* snapshot = nullptr);
     void clear();
 
     void step();                       // one fixed step of timeStep() days
+    void limitStep(double maxDays);    // shorter steps when time runs slowly, so motion stays smooth
     void updateEffects(float realDt);  // merge flashes, in real time
 
     void addBody(double mass, const Vector2D& position, const Vector2D& velocity);
@@ -48,7 +65,8 @@ public:
     double time() const { return simTime; }      // days since the preset's start
     double timeStep() const { return dt; }       // days
     int lastSubstepCount() const { return lastSubsteps; }  // pieces the last step was split into
-    bool hasCalendar() const { return calendar; }  // true when time 0 is J2000
+    bool hasCalendar() const { return calendar; }  // true when time 0 is a real date
+    double epoch() const { return epochJD; }       // Julian day at time 0
     double viewRadius() const { return viewRadiusAU; }
     double suggestedTimeScale() const { return timeScaleHint; }  // days per real second
     Preset preset() const { return currentPreset; }
@@ -64,10 +82,8 @@ private:
     void recordTrails();
     void merge(std::size_t a, std::size_t b);
     int strongestPull(const Vector2D& p, int exclude) const;
-    double orbitalPeriodEstimate(std::size_t index) const;
-    double trailIntervalFor(std::size_t index) const;
     void moveToBarycenter();
-    void buildSolarSystem();
+    void buildSolarSystem(const SolarSnapshot* snapshot);
     void buildAlphaCentauri();
 
     std::vector<Body> bodies;
@@ -75,10 +91,12 @@ private:
     QuadTree tree;
     Preset currentPreset = Preset::SolarSystem;
     double simTime = 0.0;
-    double dt = 0.1;
+    double dt = 0.1;      // the step in use
+    double baseDt = 0.1;  // the preset's own step, the longest dt can be
     double viewRadiusAU = 2.0;
     double timeScaleHint = 30.0;
     bool calendar = false;
+    double epochJD = units::J2000_JD;
     bool accelerationsStale = true;
     bool jerkValid = false;   // oldAcceleration holds the previous piece's accelerations
     double lastSubstep = 0.0;

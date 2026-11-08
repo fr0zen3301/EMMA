@@ -32,8 +32,7 @@ public:
     bool alive = true;
 
     std::deque<Vector2D> trail;
-    double trailInterval = 1.0;     // days between trail samples
-    double lastTrailTime = -1e300;  // simulation time of the last sample
+    Vector2D trailHeading;  // direction of travel when the last trail point was recorded
 
     bool isNamed() const { return !name.empty(); }
     std::string description() const { return kind.empty() ? describe(mass) : kind; }

@@ -26,6 +26,7 @@ struct UiState {
     bool resetRequested = false;
     bool resetViewRequested = false;
     int presetRequested = -1;
+    bool retryFetchRequested = false;
 };
 
 struct Stats {
@@ -35,6 +36,8 @@ struct Stats {
     double momentumDrift = 0.0;  // angular momentum, relative
     const std::vector<float>* driftHistory = nullptr;
     bool behind = false;         // the physics couldn't keep up with the chosen speed
+    std::string sourceNote;      // where the solar system's starting positions came from
+    bool canRetry = false;       // the Horizons download failed and can be tried again
 };
 
 namespace ui {
@@ -53,6 +56,5 @@ std::string formatMass(double massSolar);
 std::string formatDistance(double au);
 std::string formatRate(double daysPerSecond);
 std::string formatDuration(double days);
-std::string calendarDate(double julianDay);
 
 } // namespace ui

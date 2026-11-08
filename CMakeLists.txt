@@ -48,17 +48,45 @@ FetchContent_Declare(imgui-sfml
     GIT_SHALLOW ON)
 FetchContent_MakeAvailable(imgui-sfml)
 
-add_executable(nbody
-    main.cpp
+# The physics, the JPL Horizons download and the calendar: everything with no
+# graphics, so the tests can link it without SFML
+add_library(emma_core STATIC
     Simulation.cpp
     Body.cpp
     QuadTree.cpp
+    Calendar.cpp
+    Horizons.cpp
+    Http.cpp)
+target_include_directories(emma_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+if(WIN32)
+    target_link_libraries(emma_core PUBLIC winhttp)  # HTTPS on Windows, built into the OS
+endif()
+
+add_executable(nbody
+    main.cpp
     Renderer.cpp
     Ui.cpp)
-target_link_libraries(nbody PRIVATE SFML::Graphics ImGui-SFML::ImGui-SFML)
+target_link_libraries(nbody PRIVATE emma_core SFML::Graphics ImGui-SFML::ImGui-SFML)
+
+if(MSVC)
+    # Release builds are windowed apps, with no console window behind EMMA.
+    # mainCRTStartup keeps main() as the entry point.
+    target_link_options(nbody PRIVATE
+        $<$<CONFIG:Release>:/SUBSYSTEM:WINDOWS>
+        $<$<CONFIG:Release>:/ENTRY:mainCRTStartup>)
+endif()
 
 # Copy the font next to the executable, so EMMA finds it from any working directory
 add_custom_command(TARGET nbody POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
             ${CMAKE_CURRENT_SOURCE_DIR}/fonts $<TARGET_FILE_DIR:nbody>/fonts
     VERBATIM)
+
+# Physics tests: ctest --test-dir build -C Release --output-on-failure
+enable_testing()
+add_executable(physics_tests tests/physics_tests.cpp)
+target_link_libraries(physics_tests PRIVATE emma_core)
+foreach(test calendar horizons_parse j2000_start earth_year conservation close_pass head_on_merge barnes_hut
+             dominant_body trail_smoothness)
+    add_test(NAME ${test} COMMAND physics_tests ${test})
+endforeach()

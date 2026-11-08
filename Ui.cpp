@@ -1,4 +1,5 @@
 #include "Ui.hpp"
+#include "Calendar.hpp"
 #include "Constants.hpp"
 #include "Renderer.hpp"
 #include "imgui.h"
@@ -171,15 +172,20 @@ void drawSidebar(UiState& st, const Stats& stats, Preset preset, float width, fl
 
     if (ImGui::CollapsingHeader("System", ImGuiTreeNodeFlags_DefaultOpen)) {
         static const char* const names[] = {"Solar system", "Alpha Centauri", "Empty space"};
-        static const char* const notes[] = {
-            "The Sun, the planets and the Moon where they were on 1 January 2000.",
-            "Two Sun-like stars on their 80-year orbit, starting at closest approach.",
-            "Nothing yet. Click to add bodies."};
         const int current = static_cast<int>(preset);
         for (int i = 0; i < 3; ++i) {
             if (ImGui::RadioButton(names[i], current == i)) st.presetRequested = i;
         }
-        hint(notes[std::clamp(current, 0, 2)]);
+        switch (preset) {
+        case Preset::SolarSystem:
+            hint(stats.sourceNote.c_str());
+            if (stats.canRetry && ImGui::Button("Try again")) st.retryFetchRequested = true;
+            break;
+        case Preset::AlphaCentauri:
+            hint("Two Sun-like stars on their 80-year orbit, starting at closest approach.");
+            break;
+        case Preset::Empty: hint("Nothing yet. Click to add bodies."); break;
+        }
     }
 
     if (ImGui::CollapsingHeader("New body", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -269,7 +275,7 @@ void drawStatusBar(const Simulation& sim, const Camera& camera, sf::Vector2f mou
     }
     ImGui::SameLine(0.f, 28.f);
     if (sim.hasCalendar())
-        ImGui::TextDisabled("Date %s", calendarDate(units::J2000_JD + sim.time()).c_str());
+        ImGui::TextDisabled("Date %s", calendar::date(sim.epoch() + sim.time()).c_str());
     else
         ImGui::TextDisabled("Elapsed %s", formatDuration(sim.time()).c_str());
     ImGui::SameLine(0.f, 28.f);
@@ -374,26 +380,9 @@ std::string formatRate(double daysPerSecond) {
 
 std::string formatDuration(double days) {
     if (days >= units::DAYS_PER_YEAR) return printf_string("%.2f years", days / units::DAYS_PER_YEAR);
-    return printf_string("%.1f days", days);
-}
-
-std::string calendarDate(double jd) {
-    // Julian day to Gregorian calendar date (Meeus, Astronomical Algorithms, ch. 7)
-    const double z = std::floor(jd + 0.5);
-    const double f = jd + 0.5 - z;
-    double a = z;
-    if (z >= 2299161.0) {
-        const double alpha = std::floor((z - 1867216.25) / 36524.25);
-        a = z + 1.0 + alpha - std::floor(alpha / 4.0);
-    }
-    const double b = a + 1524.0;
-    const double c = std::floor((b - 122.1) / 365.25);
-    const double d = std::floor(365.25 * c);
-    const double e = std::floor((b - d) / 30.6001);
-    const int day = static_cast<int>(b - d - std::floor(30.6001 * e) + f);
-    const int month = static_cast<int>(e < 14.0 ? e - 1.0 : e - 13.0);
-    const int year = static_cast<int>(month > 2 ? c - 4716.0 : c - 4715.0);
-    return printf_string("%04d-%02d-%02d", year, month, day);
+    if (days >= 1.0) return printf_string("%.1f days", days);
+    if (days >= 1.0 / 24.0) return printf_string("%.1f hours", days * 24.0);
+    return printf_string("%.0f min", days * 1440.0);
 }
 
 } // namespace ui

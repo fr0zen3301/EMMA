@@ -43,33 +43,43 @@ OrbitState keplerState(double mu, double a, double e, double longPeriDeg, double
     return OrbitState{position, velocity};
 }
 
-struct PlanetData {
+struct SolarBodyInfo {
     const char* name;
     const char* kind;
-    double mass;      // Msun
+    double mass;      // Msun; for planets with moons, the whole system (IAU 2009)
     double radiusKm;  // mean radius
     Rgb color;
-    double a, e, longPeri, meanLong;  // AU, -, degrees, degrees (epoch J2000)
 };
 
-// Orbits: E. M. Standish, "Keplerian Elements for Approximate Positions of the
-// Major Planets" (JPL), table 1, epoch J2000. Masses: IAU 2009 mass ratios.
-// Earth and the Moon are placed separately in buildSolarSystem().
-const PlanetData PLANETS[] = {
-    {"Mercury", "Rocky planet", 1.0 / 6023597.4, 2439.7, Rgb{151, 151, 159},
-     0.38709927, 0.20563593, 77.45779628, 252.25032350},
-    {"Venus", "Rocky planet", 1.0 / 408523.71, 6051.8, Rgb{227, 208, 160},
-     0.72333566, 0.00677672, 131.60246718, 181.97909950},
-    {"Mars", "Rocky planet", 1.0 / 3098703.59, 3389.5, Rgb{193, 92, 52},
-     1.52371034, 0.09339410, -23.94362959, -4.55343205},
-    {"Jupiter", "Gas giant", 1.0 / 1047.348644, 69911.0, Rgb{216, 184, 140},
-     5.20288700, 0.04838624, 14.72847983, 34.39644051},
-    {"Saturn", "Gas giant", 1.0 / 3497.9018, 58232.0, Rgb{227, 207, 150},
-     9.53667594, 0.05386179, 92.59887831, 49.95424423},
-    {"Uranus", "Ice giant", 1.0 / 22902.98, 25362.0, Rgb{175, 219, 229},
-     19.18916464, 0.04725744, 170.95427630, 313.23810451},
-    {"Neptune", "Ice giant", 1.0 / 19412.26, 24622.0, Rgb{91, 125, 225},
-     30.06992276, 0.00859048, 44.96476227, -55.12002969},
+// In SolarSnapshot order. The Sun's color comes from its temperature in buildSolarSystem().
+const SolarBodyInfo SOLAR_BODIES[SOLAR_BODY_COUNT] = {
+    {"Sun", "G2V star", 1.0, 695700.0, Rgb{}},
+    {"Mercury", "Rocky planet", 1.0 / 6023597.4, 2439.7, Rgb{151, 151, 159}},
+    {"Venus", "Rocky planet", 1.0 / 408523.71, 6051.8, Rgb{227, 208, 160}},
+    {"Earth", "Rocky planet", units::EARTH_MASS, 6371.0, Rgb{79, 141, 224}},
+    {"Moon", "Moon of Earth", units::EARTH_MASS / 81.30056, 1737.4, Rgb{200, 200, 196}},
+    {"Mars", "Rocky planet", 1.0 / 3098703.59, 3389.5, Rgb{193, 92, 52}},
+    {"Jupiter", "Gas giant", 1.0 / 1047.348644, 69911.0, Rgb{216, 184, 140}},
+    {"Saturn", "Gas giant", 1.0 / 3497.9018, 58232.0, Rgb{227, 207, 150}},
+    {"Uranus", "Ice giant", 1.0 / 22902.98, 25362.0, Rgb{175, 219, 229}},
+    {"Neptune", "Ice giant", 1.0 / 19412.26, 24622.0, Rgb{91, 125, 225}},
+};
+
+struct Elements {
+    std::size_t body;                 // index into SOLAR_BODIES
+    double a, e, longPeri, meanLong;  // AU, -, degrees, degrees
+};
+
+// E. M. Standish, "Keplerian Elements for Approximate Positions of the Major
+// Planets" (JPL), table 1, epoch J2000. Earth and the Moon are placed separately.
+const Elements PLANET_ELEMENTS[] = {
+    {1, 0.38709927, 0.20563593, 77.45779628, 252.25032350},
+    {2, 0.72333566, 0.00677672, 131.60246718, 181.97909950},
+    {5, 1.52371034, 0.09339410, -23.94362959, -4.55343205},
+    {6, 5.20288700, 0.04838624, 14.72847983, 34.39644051},
+    {7, 9.53667594, 0.05386179, 92.59887831, 49.95424423},
+    {8, 19.18916464, 0.04725744, 170.95427630, 313.23810451},
+    {9, 30.06992276, 0.00859048, 44.96476227, -55.12002969},
 };
 
 // Did a and b touch during the last step? Follows the pair along the straight
@@ -89,14 +99,15 @@ bool sweptContact(const Body& a, const Body& b) {
 // ---------------------------------------------------------------------------
 // Presets
 
-void Simulation::load(Preset preset) {
+void Simulation::load(Preset preset, const SolarSnapshot* snapshot) {
     bodies.clear();
     flashes.clear();
     currentPreset = preset;
     simTime = 0.0;
+    epochJD = units::J2000_JD;
 
     switch (preset) {
-    case Preset::SolarSystem: buildSolarSystem(); break;
+    case Preset::SolarSystem: buildSolarSystem(snapshot); break;
     case Preset::AlphaCentauri: buildAlphaCentauri(); break;
     case Preset::Empty:
         dt = 0.1;
@@ -106,49 +117,54 @@ void Simulation::load(Preset preset) {
         break;
     }
 
+    baseDt = dt;
     moveToBarycenter();
-    for (std::size_t i = 0; i < bodies.size(); ++i) bodies[i].trailInterval = trailIntervalFor(i);
     accelerationsStale = true;
     ++changes;
 }
 
-void Simulation::buildSolarSystem() {
+void Simulation::buildSolarSystem(const SolarSnapshot* snapshot) {
     dt = 0.1;              // days: about 880 steps per orbit of Mercury
     calendar = true;
     viewRadiusAU = 1.8;    // Mars's orbit fills the view
-    timeScaleHint = 30.0;  // an Earth year in about 12 seconds
+    timeScaleHint = 10.0 / 24.0;  // 10 hours per second: the Moon's month in about a minute
 
-    bodies.emplace_back("Sun", "G2V star", 1.0, units::SOLAR_RADIUS_AU,
-                        Body::blackbody(units::SUN_TEMPERATURE), Vector2D(), Vector2D());
+    std::array<Vector2D, SOLAR_BODY_COUNT> position, velocity;
+    if (snapshot) {
+        // Measured state vectors, from JPL Horizons
+        position = snapshot->position;
+        velocity = snapshot->velocity;
+        epochJD = snapshot->julianDay;
+    } else {
+        // Mean orbital elements at J2000, with the Sun at the origin
+        epochJD = units::J2000_JD;
+        for (const Elements& el : PLANET_ELEMENTS) {
+            const double mu = units::G * (1.0 + SOLAR_BODIES[el.body].mass);
+            const OrbitState s = keplerState(mu, el.a, el.e, el.longPeri, el.meanLong);
+            position[el.body] = s.position;
+            velocity[el.body] = s.velocity;
+        }
 
-    auto addPlanet = [this](const PlanetData& d) {
-        const OrbitState s = keplerState(units::G * (1.0 + d.mass), d.a, d.e, d.longPeri, d.meanLong);
-        bodies.emplace_back(d.name, d.kind, d.mass, d.radiusKm / units::KM_PER_AU, d.color,
-                            s.position, s.velocity);
-    };
+        // Earth and Moon: their barycenter on its J2000 orbit, then the pair around it.
+        // Moon: mean longitude 218.3164 deg and mean anomaly 134.9634 deg at J2000 (Meeus).
+        const double earthMass = SOLAR_BODIES[3].mass, moonMass = SOLAR_BODIES[4].mass;
+        const double pairMass = earthMass + moonMass;
+        const OrbitState bary = keplerState(units::G * (1.0 + pairMass), 1.00000261, 0.01671123,
+                                            102.93768193, 100.46457166);
+        const OrbitState moon = keplerState(units::G * pairMass, 384400.0 / units::KM_PER_AU, 0.0549,
+                                            218.3164477 - 134.9633964, 218.3164477);
+        position[3] = bary.position - moon.position * (moonMass / pairMass);
+        velocity[3] = bary.velocity - moon.velocity * (moonMass / pairMass);
+        position[4] = bary.position + moon.position * (earthMass / pairMass);
+        velocity[4] = bary.velocity + moon.velocity * (earthMass / pairMass);
+    }
 
-    addPlanet(PLANETS[0]);  // Mercury
-    addPlanet(PLANETS[1]);  // Venus
-
-    // Earth and Moon: put their barycenter on its J2000 orbit, then the pair around it.
-    // Moon: mean longitude 218.3164 deg and mean anomaly 134.9634 deg at J2000 (Meeus).
-    const double earthMass = units::EARTH_MASS;
-    const double moonMass = earthMass / 81.30056;  // IAU 2009 Earth/Moon mass ratio
-    const double pairMass = earthMass + moonMass;
-    const OrbitState bary = keplerState(units::G * (1.0 + pairMass), 1.00000261, 0.01671123,
-                                        102.93768193, 100.46457166);
-    const OrbitState moon = keplerState(units::G * pairMass, 384400.0 / units::KM_PER_AU, 0.0549,
-                                        218.3164477 - 134.9633964, 218.3164477);
-    const double earthShare = moonMass / pairMass;
-    const double moonShare = earthMass / pairMass;
-    bodies.emplace_back("Earth", "Rocky planet", earthMass, 6371.0 / units::KM_PER_AU, Rgb{79, 141, 224},
-                        bary.position - moon.position * earthShare,
-                        bary.velocity - moon.velocity * earthShare);
-    bodies.emplace_back("Moon", "Moon of Earth", moonMass, 1737.4 / units::KM_PER_AU, Rgb{200, 200, 196},
-                        bary.position + moon.position * moonShare,
-                        bary.velocity + moon.velocity * moonShare);
-
-    for (std::size_t i = 2; i < std::size(PLANETS); ++i) addPlanet(PLANETS[i]);
+    for (std::size_t i = 0; i < SOLAR_BODY_COUNT; ++i) {
+        const SolarBodyInfo& info = SOLAR_BODIES[i];
+        const Rgb color = i == 0 ? Body::blackbody(units::SUN_TEMPERATURE) : info.color;
+        bodies.emplace_back(info.name, info.kind, info.mass, info.radiusKm / units::KM_PER_AU, color,
+                            position[i], velocity[i]);
+    }
 }
 
 void Simulation::buildAlphaCentauri() {
@@ -197,7 +213,6 @@ void Simulation::clear() {
 
 void Simulation::addBody(double mass, const Vector2D& position, const Vector2D& velocity) {
     bodies.emplace_back(mass, position, velocity);
-    bodies.back().trailInterval = trailIntervalFor(bodies.size() - 1);
     accelerationsStale = true;  // Verlet needs the new body's acceleration before its first drift
     ++changes;
 }
@@ -227,11 +242,17 @@ void Simulation::step() {
         else if (remaining < 1.5 * h) h = 0.5 * remaining;  // no thin sliver at the end
         verletStep(h);
         resolveCollisions();
+        recordTrails();  // per piece, so trails stay smooth through a close pass too
         remaining -= h;
         ++pieces;
     }
     lastSubsteps = pieces;
-    recordTrails();
+}
+
+void Simulation::limitStep(double maxDays) {
+    // At slow speeds the preset's step would advance only a few times per second
+    // and bodies would jump. Shorter steps cost little there and keep it smooth.
+    dt = std::clamp(maxDays, baseDt / 1024.0, baseDt);
 }
 
 void Simulation::verletStep(double h) {
@@ -376,11 +397,19 @@ void Simulation::merge(std::size_t a, std::size_t b) {
 }
 
 void Simulation::recordTrails() {
+    // A new point each time a body's direction of travel has turned by TRAIL_TURN
+    // since the last one. Curves stay smooth however tight or wide the orbit, and
+    // a straight stretch costs no points: the renderer joins the newest point to
+    // the body itself.
+    static const double cosTurn = std::cos(TRAIL_TURN);
     for (Body& b : bodies) {
-        if (simTime - b.lastTrailTime < b.trailInterval) continue;
+        const double speed = b.velocity.magnitude();
+        if (speed <= 0.0) continue;
+        const Vector2D heading = b.velocity / speed;
+        if (!b.trail.empty() && heading.dot(b.trailHeading) > cosTurn) continue;
         b.trail.push_back(b.position);
         if (b.trail.size() > MAX_TRAIL) b.trail.pop_front();
-        b.lastTrailTime = simTime;
+        b.trailHeading = heading;
     }
 }
 
@@ -411,8 +440,10 @@ int Simulation::strongestPull(const Vector2D& p, int exclude) const {
 
 int Simulation::dominantBody(const Vector2D& p, int exclude) const {
     // Laplace sphere of influence r = d (m / M)^(2/5), with M the body pulling hardest
-    // on m. The smallest sphere containing p wins: next to the Moon that is Earth,
-    // even though the Sun pulls harder on the Moon than Earth does.
+    // on m. The smallest sphere containing p wins, so close to Earth that is Earth,
+    // even where the Sun pulls harder. The formula only holds when m is much lighter
+    // than M: the two stars of Alpha Centauri have no such spheres, and there the
+    // strongest pull decides.
     int best = -1;
     double bestRadius = std::numeric_limits<double>::infinity();
     for (std::size_t i = 0; i < bodies.size(); ++i) {
@@ -421,7 +452,7 @@ int Simulation::dominantBody(const Vector2D& p, int exclude) const {
         const int parent = strongestPull(b.position, static_cast<int>(i));
         if (parent < 0) continue;
         const Body& host = bodies[static_cast<std::size_t>(parent)];
-        if (host.mass <= b.mass) continue;  // b is the primary of its pair
+        if (b.mass > 0.1 * host.mass) continue;  // similar masses: a binary companion, not a satellite
         const double soi = (b.position - host.position).magnitude() * std::pow(b.mass / host.mass, 0.4);
         if (soi < bestRadius && (p - b.position).magnitude() < soi) {
             best = static_cast<int>(i);
@@ -441,27 +472,6 @@ Vector2D Simulation::circularVelocity(const Vector2D& p) const {
     const double speed = std::sqrt(units::G * host.mass / dist);
     // prograde: counterclockwise seen from above, the way the planets go
     return host.velocity + Vector2D(-r.y, r.x) * (speed / dist);
-}
-
-double Simulation::orbitalPeriodEstimate(std::size_t index) const {
-    const Body& b = bodies[index];
-    const int hostIndex = dominantBody(b.position, static_cast<int>(index));
-    if (hostIndex < 0) return units::DAYS_PER_YEAR;
-    const Body& host = bodies[static_cast<std::size_t>(hostIndex)];
-
-    const Vector2D r = b.position - host.position;
-    const Vector2D v = b.velocity - host.velocity;
-    const double mu = units::G * (host.mass + b.mass);
-    const double dist = std::max(r.magnitude(), 1e-12);
-    // vis-viva: a bound orbit has a semi-major axis; otherwise use the circular period here
-    const double energy = 0.5 * v.lengthSquared() - mu / dist;
-    const double a = energy < 0.0 ? -mu / (2.0 * energy) : dist;
-    return 2.0 * units::PI * std::sqrt(a * a * a / mu);
-}
-
-double Simulation::trailIntervalFor(std::size_t index) const {
-    // 360 samples per orbit, so a full trail shows about two orbits
-    return std::clamp(orbitalPeriodEstimate(index) / 360.0, dt, 3650.0);
 }
 
 std::vector<Vector2D> Simulation::predictPath(const Vector2D& p, const Vector2D& v) const {
