@@ -1,205 +1,292 @@
-#include <SFML/Graphics.hpp>
+#include "Camera.hpp"
+#include "Constants.hpp"
+#include "Renderer.hpp"
+#include "Simulation.hpp"
+#include "Ui.hpp"
 #include "imgui.h"
 #include "imgui-SFML.h"
-#include "Simulation.hpp"
-#include <optional>
-#include <functional>
+#include <SFML/Graphics.hpp>
 #include <algorithm>
 #include <cmath>
-#include <random>
-#include <sstream>
-#include <iomanip>
+#include <filesystem>
+#include <optional>
+#include <vector>
 
-// High quality random number generation for star field. No hidden global state, distributions are explicit.
-std::mt19937 rng(static_cast<unsigned int>(std::time(nullptr)));
-std::uniform_real_distribution<float> dist(-2500.f, 2500.f);
+namespace {
+constexpr float SIDEBAR_WIDTH = 290.f;
+constexpr float STATUS_HEIGHT = 30.f;
+constexpr float MAX_FRAME_DT = 0.1f;        // longest real frame the physics catches up on
+constexpr float PHYSICS_BUDGET = 0.012f;    // seconds of stepping per frame before we fall behind
+constexpr float ENERGY_REFRESH = 0.25f;     // totalEnergy() is O(N^2): four times a second is plenty
+constexpr std::size_t DRIFT_HISTORY = 120;  // 30 seconds of samples
+constexpr double KMS_PER_PIXEL = 0.25;      // drag-launch scale: 4 px of drag per km/s
+constexpr double MAX_LAUNCH_KMS = 200.0;
+constexpr float CLICK_SLOP = 4.f;           // px a press can move and still count as a click
+const sf::Color ARROW_COLOR(217, 207, 255);
+} // namespace
 
-int main() {
-    sf::RenderWindow window(sf::VideoMode({1280, 800}), "EMMA (Engine for Multi-body Mechanics and Astrophysics)");
+int main(int argc, char** argv) {
+    sf::RenderWindow window(sf::VideoMode({1440u, 900u}), "EMMA (Engine for Multi-body Mechanics and Astrophysics)");
     window.setFramerateLimit(60);
+    if (!ImGui::SFML::Init(window)) return -1;
+    ImGui::GetIO().IniFilename = nullptr;  // the layout is fixed, nothing to save
 
-    if (!ImGui::SFML::Init(window)) {
-        return -1; // ImGui-SFML failed to initialize
-    }
-
-    // ImGuin styling
-    ImGuiStyle& style = ImGui::GetStyle();
-    style.WindowRounding = 6.f;
-    style.FrameRounding = 4.f;
-    style.Colors[ImGuiCol_WindowBg]      = ImVec4(0.05f, 0.05f, 0.08f, 0.85f);
-    style.Colors[ImGuiCol_TitleBg]       = ImVec4(0.08f, 0.08f, 0.12f, 1.f);
-    style.Colors[ImGuiCol_TitleBgActive] = ImVec4(0.10f, 0.10f, 0.16f, 1.f);
-    style.Colors[ImGuiCol_FrameBg]       = ImVec4(0.12f, 0.12f, 0.18f, 1.f);
-    style.Colors[ImGuiCol_SliderGrab]    = ImVec4(0.55f, 0.65f, 0.9f, 1.f);
-    style.Colors[ImGuiCol_Button]        = ImVec4(0.15f, 0.18f, 0.28f, 1.f);
-
-
-    // Custom fonts
-    sf::Font font;
-    if (!font.openFromFile("fonts/font.otf")) {
-        return -1;
-    }
-
-    // Generate star field
-    std::vector<sf::CircleShape> stars;
-    std::uniform_real_distribution<float> radiusDist(0.5f, 1.5f);
-    std::uniform_int_distribution<int> brightDist(120, 255);
-    std::uniform_int_distribution<int> tintDust(0, 2);
-    
-    for (int i = 0; i < 1000; i++) {
-        sf::CircleShape star(radiusDist(rng));
-
-        int b = brightDist(rng);
-        sf::Color c;
-        switch (tintDust(rng)) {
-            case 0: c = sf::Color(b, b, static_cast<std::uint8_t>(std::min(255, b + 30))); break;
-            case 1: c = sf::Color(static_cast<std::uint8_t>(std::min(255, b + 30)), b, b); break;
-            default: c = sf::Color(b, b, b); break;
-        }
-        star.setFillColor(c);
-
-        star.setPosition(sf::Vector2f(dist(rng), dist(rng)));
-        stars.push_back(star);
-    }
-
-    sf::Vector2f position(0.f, 0.f);
-    sf::Vector2f size(1280.f, 800.f);
-    sf::View view(sf::FloatRect(position, size));
-    window.setView(view);
-
-    // HUD view: 1 unit = 1 pixel, top-left at (0,0), unaffected by world zoom
-    sf::View hudView(sf::FloatRect({0.f, 0.f}, {1280.f, 800.f}));
-
-    // HUD text (SFML 3 requires the font in the constructor)
-    sf::Text hudText(font);
-    hudText.setCharacterSize(16);
-    hudText.setFillColor(sf::Color::White);
-    hudText.setPosition({10.f, 10.f});
-
-    float zoomVelocity = 0.f; // accumulated scroll input
-    float currentZoom = 1.f;  // track zoom level
+    const std::filesystem::path exeDir =
+        argc > 0 ? std::filesystem::path(argv[0]).parent_path() : std::filesystem::path();
+    ui::loadFont(exeDir);
+    ui::applyTheme();
 
     Simulation sim;
-    const float TIME_SCALE = 10.f;
-    const float FIXED_DT = 1.f / 120.f;
-    float accumulator = 0.f;
-    sf::Clock clock;
+    Renderer renderer;
+    Camera camera;
+    UiState state;
 
-    // Spawn-panel state (driven by the ImGui sliders)
-    float spawnMassExp = 6.f; // body mass = 10^spawnMassExp
-    float spawnSpeed = 0.f;   // initial speed
-    float spawnAngle = 0.f;   // initial direction, in radians
+    auto layout = [&](sf::Vector2u size) {
+        const float w = static_cast<float>(size.x), h = static_cast<float>(size.y);
+        window.setView(sf::View(sf::FloatRect({0.f, 0.f}, {w, h})));
+        camera.viewport = sf::FloatRect({SIDEBAR_WIDTH, 0.f},
+                                        {std::max(1.f, w - SIDEBAR_WIDTH), std::max(1.f, h - STATUS_HEIGHT)});
+    };
+    auto loadPreset = [&](Preset preset) {
+        sim.load(preset);
+        camera.fit(sim.viewRadius());
+        state.timeScale = static_cast<float>(sim.suggestedTimeScale());
+    };
+    layout(window.getSize());
+    loadPreset(Preset::SolarSystem);
+
+    // Input state
+    bool pressing = false, dragging = false, panning = false;
+    sf::Vector2f pressAt, mouse, lastPan;
+    float zoomVelocity = 0.f;
+
+    // Timing and diagnostics
+    sf::Clock clock;
+    double accumulatorDays = 0.0;
+    float behindTimer = 0.f;
+    float energyTimer = ENERGY_REFRESH;  // refresh on the first frame
+    unsigned long long baselineChange = ~0ull;
+    double baseEnergy = 0.0, baseMomentum = 0.0, energyDrift = 0.0, momentumDrift = 0.0;
+    std::vector<float> driftHistory;
+
+    auto inViewport = [&](sf::Vector2f p) {
+        return camera.viewport.contains(p) && !ImGui::GetIO().WantCaptureMouse;
+    };
+    // Drag from the press point -> launch speed (km/s) and direction (radians, world frame)
+    auto dragLaunch = [&](sf::Vector2f to, double& speedKms, double& angle) {
+        const sf::Vector2f d = to - pressAt;
+        speedKms = std::min(MAX_LAUNCH_KMS, std::hypot(static_cast<double>(d.x), static_cast<double>(d.y)) * KMS_PER_PIXEL);
+        angle = std::atan2(-static_cast<double>(d.y), static_cast<double>(d.x));  // screen y is down
+    };
+    // Launch velocity in the inertial frame. Speed and direction are relative to the
+    // body that dominates gravity at the spawn point, so a launch near Earth moves with Earth.
+    auto launchVelocity = [&](const Vector2D& at, double speedKms, double angle) -> Vector2D {
+        if (state.autoOrbit) return sim.circularVelocity(at);
+        const int host = sim.dominantBody(at);
+        const Vector2D base = host >= 0 ? sim.getBodies()[static_cast<std::size_t>(host)].velocity : Vector2D();
+        return base + Vector2D(std::cos(angle), std::sin(angle)) * (speedKms * units::KMS_TO_AU_PER_DAY);
+    };
+    auto spawnMass = [&]() { return std::pow(10.0, static_cast<double>(state.massExponent)); };
 
     while (window.isOpen()) {
-        // Handle events
+        // ------------------------------------------------------------------ events
         while (const std::optional<sf::Event> event = window.pollEvent()) {
             ImGui::SFML::ProcessEvent(window, *event);
 
             if (event->is<sf::Event::Closed>()) {
                 window.close();
-            }
-
-            else if (const auto* wheel = event->getIf<sf::Event::MouseWheelScrolled>()) {
-                if (wheel->wheel == sf::Mouse::Wheel::Vertical) {
+            } else if (const auto* resized = event->getIf<sf::Event::Resized>()) {
+                layout(resized->size);
+            } else if (const auto* wheel = event->getIf<sf::Event::MouseWheelScrolled>()) {
+                if (wheel->wheel == sf::Mouse::Wheel::Vertical && inViewport(sf::Vector2f(wheel->position)))
                     zoomVelocity += wheel->delta;
+            } else if (const auto* press = event->getIf<sf::Event::MouseButtonPressed>()) {
+                const sf::Vector2f at(press->position);
+                if (!inViewport(at)) continue;
+                if (press->button == sf::Mouse::Button::Left) {
+                    pressing = true;
+                    dragging = false;
+                    pressAt = at;
+                } else if (press->button == sf::Mouse::Button::Right ||
+                           press->button == sf::Mouse::Button::Middle) {
+                    panning = true;
+                    lastPan = at;
                 }
-            }
-            else if (const auto* resized = event->getIf<sf::Event::Resized>()) {
-                sf::Vector2f newSize(static_cast<float>(resized->size.x),
-                                    static_cast<float>(resized->size.y));
-                view.setSize(newSize * currentZoom); // keep current zoom level
-                window.setView(view);
-
-                // keep the HUD pinned to pixels at the new window size
-                hudView.setSize(newSize);
-                hudView.setCenter(newSize / 2.f);
-            }
-            else if (const auto* mouseButton = event->getIf<sf::Event::MouseButtonPressed>()) {
-                // Only fires for clicks inside the content area
-                if (mouseButton->button == sf::Mouse::Button::Left
-                        && !ImGui::GetIO().WantCaptureMouse) {
-                    sf::Vector2f worldPos = window.mapPixelToCoords(mouseButton->position);
-                    sim.addBody(
-                            1e6,
-                            Vector2D(worldPos.x, worldPos.y),
-                            Vector2D(0.0, 0.0)
-                        );
+            } else if (const auto* release = event->getIf<sf::Event::MouseButtonReleased>()) {
+                if (release->button == sf::Mouse::Button::Left) {
+                    if (pressing) {
+                        const Vector2D at = camera.toWorld(pressAt);
+                        double speed = state.speedKms, angle = state.angle;
+                        if (dragging) dragLaunch(sf::Vector2f(release->position), speed, angle);
+                        sim.addBody(spawnMass(), at, launchVelocity(at, speed, angle));
+                    }
+                    pressing = false;
+                    dragging = false;
+                } else {
+                    panning = false;
+                }
+            } else if (const auto* moved = event->getIf<sf::Event::MouseMoved>()) {
+                const sf::Vector2f at(moved->position);
+                if (panning) {
+                    camera.panPixels(at - lastPan);
+                    lastPan = at;
+                }
+                if (pressing && !dragging) {
+                    const sf::Vector2f d = at - pressAt;
+                    if (d.x * d.x + d.y * d.y > CLICK_SLOP * CLICK_SLOP) {
+                        dragging = true;
+                        state.autoOrbit = false;  // the drag sets the velocity now
+                    }
+                }
+            } else if (const auto* key = event->getIf<sf::Event::KeyPressed>()) {
+                if (ImGui::GetIO().WantCaptureKeyboard) continue;
+                switch (key->code) {
+                case sf::Keyboard::Key::Space: state.paused = !state.paused; break;
+                case sf::Keyboard::Key::N:
+                    state.paused = true;
+                    state.stepRequested = true;
+                    break;
+                case sf::Keyboard::Key::Escape:
+                    pressing = false;
+                    dragging = false;
+                    break;
+                case sf::Keyboard::Key::F: state.resetViewRequested = true; break;
+                default: break;
                 }
             }
         }
 
-        // Per-frame timestep, shared by ImGui and the simulation
-        sf::Time elapsed = clock.restart();
-        float dt = elapsed.asSeconds();
+        const sf::Time elapsed = clock.restart();
+        const float frameDt = elapsed.asSeconds();
         ImGui::SFML::Update(window, elapsed);
+        mouse = sf::Vector2f(sf::Mouse::getPosition(window));
 
-        // ImGui control panel
-        ImGui::Begin("Spawn Controls");
-        ImGui::SliderFloat("Mass (10^x)", &spawnMassExp, 4.f, 8.f);
-        ImGui::SliderFloat("Speed", &spawnSpeed, 0.f, 50.f);
-        ImGui::SliderAngle("Direction", &spawnAngle);
-        if (ImGui::Button("Spawn at view center")) {
-            sf::Vector2f c = view.getCenter();
-            Vector2D vel(std::cos(spawnAngle) * spawnSpeed,
-                         std::sin(spawnAngle) * spawnSpeed);
-            sim.addBody(std::pow(10.f, spawnMassExp),
-                        Vector2D(c.x, c.y), vel);
-        }
-        if (ImGui::Button("Load Solar System (similar system)")) {
-            sim.loadSolarSystem();
-        }
-        if (ImGui::Button("Three Body System")) {
-            sim.loadFigureEight();
-        }
-        ImGui::Text("Bodies: %zu", sim.getBodyCount());
-        ImGui::End();
-
-        // Apply zoom (Once per Frame)
+        // Zoom toward the cursor, with a little inertia
         if (std::abs(zoomVelocity) > 0.01f) {
-            sf::Vector2i mousePixel = sf::Mouse::getPosition(window);
-            sf::Vector2f beforeZoomCoords = window.mapPixelToCoords(mousePixel);
-
-            float rawFactor = std::pow(0.9f, zoomVelocity);
-            float newZoom = std::clamp(currentZoom * rawFactor, 0.5f, 10.f);
-            float effectiveFactor = newZoom / currentZoom; 
-            currentZoom = newZoom;
-
-            view.zoom(effectiveFactor);
-            window.setView(view);
-
-            sf::Vector2f afterZoomCoords = window.mapPixelToCoords(mousePixel);
-            view.move(beforeZoomCoords - afterZoomCoords);
-            window.setView(view);
-
-            zoomVelocity *= 0.85f; // damping trackpad inertia killer 
+            camera.zoomAt(mouse, std::pow(1.0 / 0.9, static_cast<double>(zoomVelocity)));
+            zoomVelocity *= 0.85f;
+        }
+        // The panel follows the drag, so a plain click afterwards repeats the same shot
+        if (dragging) {
+            double speed = 0.0, angle = 0.0;
+            dragLaunch(mouse, speed, angle);
+            state.speedKms = static_cast<float>(speed);
+            state.angle = static_cast<float>(angle);
         }
 
-        // Update simulation (dt computed above)
-        accumulator += dt * TIME_SCALE;
-        while (accumulator >= FIXED_DT) {
-            sim.update(FIXED_DT);
-            accumulator -= FIXED_DT;
+        // ------------------------------------------------------------------ interface
+        const sf::Vector2u size = window.getSize();
+        const float width = static_cast<float>(size.x), height = static_cast<float>(size.y);
+        Stats stats;
+        stats.bodies = sim.getBodyCount();
+        stats.fps = ImGui::GetIO().Framerate;
+        stats.energyDrift = energyDrift;
+        stats.momentumDrift = momentumDrift;
+        stats.driftHistory = &driftHistory;
+        stats.behind = behindTimer > 0.f;
+        ui::drawSidebar(state, stats, sim.preset(), SIDEBAR_WIDTH, height - STATUS_HEIGHT);
+        ui::drawStatusBar(sim, camera, mouse, state, height - STATUS_HEIGHT, width, STATUS_HEIGHT);
+
+        if (state.presetRequested >= 0) {
+            loadPreset(static_cast<Preset>(state.presetRequested));
+            state.presetRequested = -1;
+            accumulatorDays = 0.0;
+        }
+        if (state.resetRequested) {
+            loadPreset(sim.preset());
+            state.resetRequested = false;
+            accumulatorDays = 0.0;
+        }
+        if (state.clearRequested) {
+            sim.clear();
+            state.clearRequested = false;
+        }
+        if (state.resetViewRequested) {
+            camera.fit(sim.viewRadius());
+            state.resetViewRequested = false;
         }
 
-        // Render
-        window.clear(sf::Color::Black);
+        // ------------------------------------------------------------------ physics
+        // Fixed steps, as many as the chosen speed needs. The frame time is capped so a
+        // stall (dragging the window on Windows pauses the loop) can't snowball.
+        if (!state.paused)
+            accumulatorDays += std::min(frameDt, MAX_FRAME_DT) * static_cast<double>(state.timeScale);
+        else if (state.stepRequested)
+            accumulatorDays += std::max(static_cast<double>(state.timeScale) / 60.0, sim.timeStep());
+        state.stepRequested = false;
 
-        for (const auto& star : stars)
-            window.draw(star);
+        sf::Clock physicsClock;
+        bool behind = false;
+        int steps = 0;
+        while (accumulatorDays >= sim.timeStep()) {
+            sim.step();
+            accumulatorDays -= sim.timeStep();
+            if (++steps % 32 == 0 && physicsClock.getElapsedTime().asSeconds() > PHYSICS_BUDGET) {
+                behind = true;  // drop the backlog instead of freezing the window
+                accumulatorDays = 0.0;
+                break;
+            }
+        }
+        behindTimer = behind ? 1.f : std::max(0.f, behindTimer - frameDt);
+        sim.updateEffects(frameDt);
 
-        sim.draw(window);
+        // Conservation check, a few times per second
+        energyTimer += frameDt;
+        if (energyTimer >= ENERGY_REFRESH) {
+            energyTimer = 0.f;
+            const double energy = sim.totalEnergy();
+            const double momentum = sim.angularMomentum();
+            if (sim.changeCount() != baselineChange) {  // bodies added, merged or loaded: new baseline
+                baselineChange = sim.changeCount();
+                baseEnergy = energy;
+                baseMomentum = momentum;
+                driftHistory.clear();
+            }
+            energyDrift = baseEnergy != 0.0 ? (energy - baseEnergy) / std::abs(baseEnergy) : 0.0;
+            momentumDrift = baseMomentum != 0.0 ? (momentum - baseMomentum) / std::abs(baseMomentum) : 0.0;
+            driftHistory.push_back(static_cast<float>(energyDrift));
+            if (driftHistory.size() > DRIFT_HISTORY) driftHistory.erase(driftHistory.begin());
+        }
 
-        // Draw HUD on top, in screen space
-        float fps = (dt > 0.f) ? (1.f / dt) : 0.f;
-        std::ostringstream hud;
-        hud << "Bodies: " << sim.getBodyCount() << "\n"
-            << "Energy: " << std::scientific << std::setprecision(2) << sim.totalEnergy() << "\n"
-            << "FPS: " << std::fixed << std::setprecision(0) << fps;
-        hudText.setString(hud.str());
+        // ------------------------------------------------------------------ drawing
+        window.clear(sf::Color(4, 4, 9));
+        renderer.drawStarfield(window);
+        if (state.showTrails) renderer.drawTrails(window, camera, sim.getBodies());
+        renderer.drawBodies(window, camera, sim.getBodies());
+        renderer.drawFlashes(window, camera, sim.flashes);
 
-        window.setView(hudView);
-        window.draw(hudText);
-        window.setView(view); // restore world view
+        // Preview of the next body: ghost, velocity arrow and predicted path
+        const bool hovering = !pressing && !panning && inViewport(mouse);
+        if (pressing || hovering) {
+            const sf::Vector2f anchor = pressing ? pressAt : mouse;
+            const Vector2D at = camera.toWorld(anchor);
+            double speed = state.speedKms, angle = state.angle;
+            if (dragging) dragLaunch(mouse, speed, angle);
+            const Vector2D velocity = launchVelocity(at, speed, angle);
+            const double mass = spawnMass();
+            const Rgb color = Body::colorForMass(mass);
+
+            if (state.showPath) renderer.drawPath(window, camera, sim.predictPath(at, velocity), color);
+            renderer.drawGhost(window, anchor,
+                               Renderer::screenRadius(mass, Body::radiusForMass(mass), camera.pxPerAU), color);
+
+            // Arrow for the velocity relative to the dominant body, at the drag scale
+            const int host = sim.dominantBody(at);
+            const Vector2D relative =
+                velocity - (host >= 0 ? sim.getBodies()[static_cast<std::size_t>(host)].velocity : Vector2D());
+            const double kms = relative.magnitude() / units::KMS_TO_AU_PER_DAY;
+            if (kms > 0.05) {
+                const Vector2D dir = relative / relative.magnitude();
+                const double px = kms / KMS_PER_PIXEL;
+                const sf::Vector2f tip =
+                    anchor + sf::Vector2f(static_cast<float>(dir.x * px), static_cast<float>(-dir.y * px));
+                renderer.drawArrow(window, anchor, tip, dragging ? ARROW_COLOR : sf::Color(217, 207, 255, 150));
+            }
+            if (dragging) ui::drawLaunchReadout(mouse, speed, angle);
+        }
+
+        if (state.showLabels) ui::drawLabels(camera, sim.getBodies());
+        if (hovering) ui::drawBodyTooltip(sim, camera, mouse);
 
         ImGui::SFML::Render(window);
         window.display();

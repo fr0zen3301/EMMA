@@ -1,18 +1,45 @@
 #include "QuadTree.hpp"
+#include "Body.hpp"
+#include "Constants.hpp"
+#include <algorithm>
 #include <cmath>
 
-QuadTree::QuadTree(const Vector2D& center, double halfSize) {
-    root = std::make_unique<Node>();
-    root->center = center;
-    root->halfSize = halfSize;
+namespace {
+// Bodies closer than root size / 2^48 are folded into one point mass.
+// They would have collided and merged long before reaching this depth.
+constexpr int MAX_DEPTH = 48;
 }
 
-void QuadTree::insert(const Body* b) {
-    insert(*root, b, 0);
-}
+void QuadTree::build(const std::vector<Body>& bodies) {
+    source = &bodies;
+    nodes.clear();
 
-Vector2D QuadTree::computeForce(const Body& body, double theta) const {
-    return force(*root, body, theta);
+    bool any = false;
+    Vector2D lo, hi;
+    for (const Body& b : bodies) {
+        if (!b.alive) continue;
+        if (!any) {
+            lo = b.position;
+            hi = b.position;
+            any = true;
+            continue;
+        }
+        lo.x = std::min(lo.x, b.position.x);
+        lo.y = std::min(lo.y, b.position.y);
+        hi.x = std::max(hi.x, b.position.x);
+        hi.y = std::max(hi.y, b.position.y);
+    }
+    if (!any) return;
+
+    Node root;
+    root.center = (lo + hi) * 0.5;
+    root.halfSize = 0.5 * std::max(hi.x - lo.x, hi.y - lo.y) * 1.0001 + 1e-12;
+    nodes.reserve(4 * bodies.size() + 1);
+    nodes.push_back(root);
+
+    for (std::size_t i = 0; i < bodies.size(); ++i) {
+        if (bodies[i].alive && bodies[i].mass > 0.0) insert(0, static_cast<int>(i), 0);
+    }
 }
 
 int QuadTree::quadrantOf(const Node& node, const Vector2D& p) {
@@ -22,66 +49,87 @@ int QuadTree::quadrantOf(const Node& node, const Vector2D& p) {
     return q;
 }
 
-void QuadTree::subdivide(Node& node) {
-    double h = node.halfSize / 2.0;
-    const Vector2D offsets[4] = {
-        {-h, -h}, {+h, -h}, {-h, +h}, {+h, +h}
-    };
-    for (int q = 0; q < 4; ++q) {
-        node.children[q] = std::make_unique<Node>();
-        node.children[q]->center = node.center + offsets[q];
-        node.children[q]->halfSize = h;
+void QuadTree::subdivide(int n) {
+    const Vector2D c = nodes[n].center;
+    const double h = 0.5 * nodes[n].halfSize;
+    const int first = static_cast<int>(nodes.size());
+    const Vector2D offsets[4] = {Vector2D(-h, -h), Vector2D(h, -h), Vector2D(-h, h), Vector2D(h, h)};
+    for (const Vector2D& o : offsets) {
+        Node child;
+        child.center = c + o;
+        child.halfSize = h;
+        nodes.push_back(child);  // may reallocate: only indices are held across this call
     }
+    nodes[n].firstChild = first;
 }
 
-void QuadTree::insert(Node& node, const Body* b, int depth) {
-    // Depth cap: bodies at (nearly) identical positions would subdivide forever
-    constexpr int MAX_DEPTH = 32;
-    if (node.mass == 0.0 && node.isLeaf()) {
-        // empty leaf: take the body
-        node.body = b;
-        node.mass = b->mass;
-        node.com = b->position;
-        return;
+void QuadTree::insert(int n, int bi, int depth) {
+    const Vector2D p = (*source)[bi].position;
+    const double m = (*source)[bi].mass;
+
+    if (nodes[n].firstChild < 0) {
+        if (nodes[n].mass == 0.0) {  // empty leaf: the body lives here
+            nodes[n].body = bi;
+            nodes[n].mass = m;
+            nodes[n].com = p;
+            return;
+        }
+        if (depth >= MAX_DEPTH) {  // unresolvably close: keep them as one point mass
+            Node& node = nodes[n];
+            const double total = node.mass + m;
+            node.com = (node.com * node.mass + p * m) / total;
+            node.mass = total;
+            node.body = -1;
+            return;
+        }
+        // occupied leaf: split it and push the resident body down a level
+        const int resident = nodes[n].body;
+        nodes[n].body = -1;
+        subdivide(n);
+        if (resident >= 0) {
+            const int q = quadrantOf(nodes[n], (*source)[resident].position);
+            insert(nodes[n].firstChild + q, resident, depth + 1);
+        }
     }
 
-    if (node.isLeaf() && depth < MAX_DEPTH) {
-        // occupied leaf
-        const Body* old = node.body;
-        node.body = nullptr;
-        subdivide(node);
-        insert(*node.children[quadrantOf(node, old->position)], old, depth + 1);
+    {   // fetch the node again: subdivide and the recursion above may have grown the array
+        Node& node = nodes[n];
+        const double total = node.mass + m;
+        node.com = (node.com * node.mass + p * m) / total;
+        node.mass = total;
     }
-
-    // update this node's aggregate mass
-    double total = node.mass + b->mass;
-    node.com = (node.com * node.mass + b->position * b->mass) / total;
-    node.mass = total;
-
-    if (!node.isLeaf()) {
-        insert(*node.children[quadrantOf(node, b->position)], b, depth + 1);
-    }
-    // at MAX_DEPTH: aggregate updated above, body not stored individually
+    const int q = quadrantOf(nodes[n], p);
+    insert(nodes[n].firstChild + q, bi, depth + 1);
 }
 
-Vector2D QuadTree::force(const Node& node, const Body& b, double theta) {
-    if (node.mass == 0.0) return Vector2D(0, 0);
-    if (node.body == &b) return Vector2D(0, 0);
+Vector2D QuadTree::acceleration(std::size_t self, double theta, double softeningSq) const {
+    Vector2D acc;
+    if (nodes.empty()) return acc;
 
-    Vector2D direction = node.com - b.position;
-    double dist = direction.magnitude();
+    const Vector2D p = (*source)[self].position;
+    const int selfIndex = static_cast<int>(self);
+    const double theta2 = theta * theta;
 
-    bool farEnough = (2.0 * node.halfSize) / dist < theta;
+    stack.clear();
+    stack.push_back(0);
+    while (!stack.empty()) {
+        const Node& node = nodes[static_cast<std::size_t>(stack.back())];
+        stack.pop_back();
+        if (node.mass == 0.0 || node.body == selfIndex) continue;
 
-    if (node.isLeaf() || farEnough) {
-        if (dist < 1e-9) return Vector2D(0, 0);
-        double distSq = dist * dist + Body::SOFTENING * Body::SOFTENING;
-        double f = Body::G * b.mass * node.mass / distSq;
-        return (direction / dist) * f;
+        const Vector2D d = node.com - p;
+        const double dist2 = d.lengthSquared();
+        const double size = 2.0 * node.halfSize;
+
+        if (node.firstChild < 0 || size * size < theta2 * dist2) {
+            // Plummer-softened point mass: a = G M d / (|d|^2 + eps^2)^(3/2).
+            // This is the exact gradient of the potential totalEnergy() uses.
+            const double r2 = dist2 + softeningSq;
+            if (r2 <= 0.0) continue;
+            acc += d * (units::G * node.mass / (r2 * std::sqrt(r2)));
+        } else {
+            for (int q = 0; q < 4; ++q) stack.push_back(node.firstChild + q);
+        }
     }
-
-    Vector2D total(0, 0);
-    for (const auto& child : node.children)
-        total += force(*child, b, theta);
-    return total;
+    return acc;
 }

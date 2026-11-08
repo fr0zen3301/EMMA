@@ -1,34 +1,34 @@
 #pragma once
 #include "Vector2D.hpp"
-#include "Body.hpp"
-#include <array>
-#include <memory>
+#include <cstddef>
+#include <vector>
 
+class Body;
+
+// Barnes-Hut quadtree. Nodes live in one flat array that is rebuilt every step,
+// so once the array has grown, building the tree no longer touches the heap.
 class QuadTree {
 public:
-    QuadTree(const Vector2D& center, double halfSize);
+    void build(const std::vector<Body>& bodies);
 
-    void insert(const Body* b);
-
-    // net gravitational force
-    Vector2D computeForce(const Body& body, double theta) const;
+    // Gravitational acceleration on bodies[self], in AU/day^2
+    Vector2D acceleration(std::size_t self, double theta, double softeningSq) const;
 
 private:
     struct Node {
-        Vector2D center;        // geometric center of this square
-        double halfSize;
-        Vector2D com{0, 0};     // center of mass of all bodies inside
+        Vector2D center;       // geometric center of this square
+        double halfSize = 0.0;
+        Vector2D com;          // center of mass of everything inside
         double mass = 0.0;
-        const Body* body = nullptr;
-        std::array<std::unique_ptr<Node>, 4> children;      // NW, NE, SW, SE
-
-        bool isLeaf() const { return !children[0]; }
+        int body = -1;         // the single body stored in a leaf, -1 otherwise
+        int firstChild = -1;   // first of four consecutive children, -1 for a leaf
     };
 
-    std::unique_ptr<Node> root;
-
-    static void insert(Node& node, const Body* b, int depth);
-    static void subdivide(Node& node);
+    void insert(int node, int bodyIndex, int depth);
+    void subdivide(int node);
     static int quadrantOf(const Node& node, const Vector2D& p);
-    static Vector2D force(const Node& node, const Body& b, double theta);
+
+    std::vector<Node> nodes;
+    const std::vector<Body>* source = nullptr;
+    mutable std::vector<int> stack;  // traversal scratch space
 };

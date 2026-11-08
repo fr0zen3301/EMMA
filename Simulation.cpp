@@ -1,222 +1,592 @@
 #include "Simulation.hpp"
-#include "QuadTree.hpp"
-#include <SFML/Graphics/VertexArray.hpp>
-#include <SFML/Graphics/Color.hpp>
-#include <cmath>
+#include "Constants.hpp"
 #include <algorithm>
+#include <cmath>
+#include <cstddef>
+#include <iterator>
+#include <limits>
+#include <numeric>
 
-Simulation::Simulation() {
-    // hierarchical triple
-    const Vector2D c(400, 300);
-    const double m = 1e14;
+namespace {
 
-    // binary, separation 80
-    bodies.emplace_back(m, c + Vector2D(-40, 0), Vector2D(0.0, 6.46));
-    bodies.emplace_back(m, c + Vector2D(40, 0), Vector2D(0.0, -6.46));
+struct OrbitState {
+    Vector2D position;
+    Vector2D velocity;
+};
 
-    // companion orbiting the pair
-    bodies.emplace_back(5e6, c + Vector2D(0, -280), Vector2D(6.90, 0.0));
+// Position and velocity on a Kepler orbit, relative to the primary, in the orbit plane.
+// mu = G (M + m). Angles in degrees: longitude of perihelion and mean longitude.
+OrbitState keplerState(double mu, double a, double e, double longPeriDeg, double meanLongDeg) {
+    const double varpi = longPeriDeg * units::DEG;
+    const double M = std::remainder((meanLongDeg - longPeriDeg) * units::DEG, 2.0 * units::PI);
 
-    // initialize trails
-    trails.resize(bodies.size());
+    // Kepler's equation E - e sin E = M, by Newton's method
+    double E = e < 0.8 ? M : units::PI;
+    for (int i = 0; i < 50; ++i) {
+        const double f = E - e * std::sin(E) - M;
+        E -= f / (1.0 - e * std::cos(E));
+        if (std::abs(f) < 1e-14) break;
+    }
+
+    const double nu = 2.0 * std::atan2(std::sqrt(1.0 + e) * std::sin(0.5 * E),
+                                       std::sqrt(1.0 - e) * std::cos(0.5 * E));
+    const double r = a * (1.0 - e * std::cos(E));
+    const double h = std::sqrt(mu / (a * (1.0 - e * e)));
+
+    const double theta = nu + varpi;
+    const Vector2D position(r * std::cos(theta), r * std::sin(theta));
+    // perifocal velocity (-sin nu, e + cos nu) * sqrt(mu / p), rotated by varpi
+    const double vx = -h * std::sin(nu);
+    const double vy = h * (e + std::cos(nu));
+    const Vector2D velocity(vx * std::cos(varpi) - vy * std::sin(varpi),
+                            vx * std::sin(varpi) + vy * std::cos(varpi));
+    return OrbitState{position, velocity};
 }
 
-void Simulation::update(double dt) {
-    // drift - moving positions using current velocity + stored acceleration
-    for (auto& body : bodies) {
-        body.position += body.velocity * dt + body.acceleration * (0.5 * dt * dt);
+struct PlanetData {
+    const char* name;
+    const char* kind;
+    double mass;      // Msun
+    double radiusKm;  // mean radius
+    Rgb color;
+    double a, e, longPeri, meanLong;  // AU, -, degrees, degrees (epoch J2000)
+};
+
+// Orbits: E. M. Standish, "Keplerian Elements for Approximate Positions of the
+// Major Planets" (JPL), table 1, epoch J2000. Masses: IAU 2009 mass ratios.
+// Earth and the Moon are placed separately in buildSolarSystem().
+const PlanetData PLANETS[] = {
+    {"Mercury", "Rocky planet", 1.0 / 6023597.4, 2439.7, Rgb{151, 151, 159},
+     0.38709927, 0.20563593, 77.45779628, 252.25032350},
+    {"Venus", "Rocky planet", 1.0 / 408523.71, 6051.8, Rgb{227, 208, 160},
+     0.72333566, 0.00677672, 131.60246718, 181.97909950},
+    {"Mars", "Rocky planet", 1.0 / 3098703.59, 3389.5, Rgb{193, 92, 52},
+     1.52371034, 0.09339410, -23.94362959, -4.55343205},
+    {"Jupiter", "Gas giant", 1.0 / 1047.348644, 69911.0, Rgb{216, 184, 140},
+     5.20288700, 0.04838624, 14.72847983, 34.39644051},
+    {"Saturn", "Gas giant", 1.0 / 3497.9018, 58232.0, Rgb{227, 207, 150},
+     9.53667594, 0.05386179, 92.59887831, 49.95424423},
+    {"Uranus", "Ice giant", 1.0 / 22902.98, 25362.0, Rgb{175, 219, 229},
+     19.18916464, 0.04725744, 170.95427630, 313.23810451},
+    {"Neptune", "Ice giant", 1.0 / 19412.26, 24622.0, Rgb{91, 125, 225},
+     30.06992276, 0.00859048, 44.96476227, -55.12002969},
+};
+
+// Did a and b touch during the last step? Follows the pair along the straight
+// segments they moved, so a fast body can't jump through another between steps.
+bool sweptContact(const Body& a, const Body& b) {
+    const Vector2D start = b.previousPosition - a.previousPosition;
+    const Vector2D motion = (b.position - a.position) - start;
+    const double mm = motion.lengthSquared();
+    const double t = mm > 0.0 ? std::clamp(-start.dot(motion) / mm, 0.0, 1.0) : 0.0;
+    const Vector2D closest = start + motion * t;
+    const double reach = a.radius + b.radius;
+    return closest.lengthSquared() <= reach * reach;
+}
+
+} // namespace
+
+// ---------------------------------------------------------------------------
+// Presets
+
+void Simulation::load(Preset preset) {
+    bodies.clear();
+    flashes.clear();
+    currentPreset = preset;
+    simTime = 0.0;
+
+    switch (preset) {
+    case Preset::SolarSystem: buildSolarSystem(); break;
+    case Preset::AlphaCentauri: buildAlphaCentauri(); break;
+    case Preset::Empty:
+        dt = 0.1;
+        calendar = false;
+        viewRadiusAU = 2.0;
+        timeScaleHint = 30.0;
+        break;
     }
 
-    // recompute forces at the new position: Barnes-Hut - O(N log N)
-    for (auto& body : bodies) body.resetForce();
-    
-    if (!bodies.empty()) {
-        // bounding square around all bodies
-        Vector2D lo = bodies[0].position, hi = bodies[0].position;
-        for (const auto& b : bodies) {
-            lo.x = std::min(lo.x, b.position.x);
-            lo.y = std::min(lo.y, b.position.y);
-            hi.x = std::max(hi.x, b.position.x);
-            hi.y = std::max(hi.y, b.position.y);
+    moveToBarycenter();
+    for (std::size_t i = 0; i < bodies.size(); ++i) bodies[i].trailInterval = trailIntervalFor(i);
+    accelerationsStale = true;
+    ++changes;
+}
+
+void Simulation::buildSolarSystem() {
+    dt = 0.1;              // days: about 880 steps per orbit of Mercury
+    calendar = true;
+    viewRadiusAU = 1.8;    // Mars's orbit fills the view
+    timeScaleHint = 30.0;  // an Earth year in about 12 seconds
+
+    bodies.emplace_back("Sun", "G2V star", 1.0, units::SOLAR_RADIUS_AU,
+                        Body::blackbody(units::SUN_TEMPERATURE), Vector2D(), Vector2D());
+
+    auto addPlanet = [this](const PlanetData& d) {
+        const OrbitState s = keplerState(units::G * (1.0 + d.mass), d.a, d.e, d.longPeri, d.meanLong);
+        bodies.emplace_back(d.name, d.kind, d.mass, d.radiusKm / units::KM_PER_AU, d.color,
+                            s.position, s.velocity);
+    };
+
+    addPlanet(PLANETS[0]);  // Mercury
+    addPlanet(PLANETS[1]);  // Venus
+
+    // Earth and Moon: put their barycenter on its J2000 orbit, then the pair around it.
+    // Moon: mean longitude 218.3164 deg and mean anomaly 134.9634 deg at J2000 (Meeus).
+    const double earthMass = units::EARTH_MASS;
+    const double moonMass = earthMass / 81.30056;  // IAU 2009 Earth/Moon mass ratio
+    const double pairMass = earthMass + moonMass;
+    const OrbitState bary = keplerState(units::G * (1.0 + pairMass), 1.00000261, 0.01671123,
+                                        102.93768193, 100.46457166);
+    const OrbitState moon = keplerState(units::G * pairMass, 384400.0 / units::KM_PER_AU, 0.0549,
+                                        218.3164477 - 134.9633964, 218.3164477);
+    const double earthShare = moonMass / pairMass;
+    const double moonShare = earthMass / pairMass;
+    bodies.emplace_back("Earth", "Rocky planet", earthMass, 6371.0 / units::KM_PER_AU, Rgb{79, 141, 224},
+                        bary.position - moon.position * earthShare,
+                        bary.velocity - moon.velocity * earthShare);
+    bodies.emplace_back("Moon", "Moon of Earth", moonMass, 1737.4 / units::KM_PER_AU, Rgb{200, 200, 196},
+                        bary.position + moon.position * moonShare,
+                        bary.velocity + moon.velocity * moonShare);
+
+    for (std::size_t i = 2; i < std::size(PLANETS); ++i) addPlanet(PLANETS[i]);
+}
+
+void Simulation::buildAlphaCentauri() {
+    dt = 1.0;
+    calendar = false;
+    viewRadiusAU = 22.0;
+    timeScaleHint = 2.0 * units::DAYS_PER_YEAR;  // two years per second: one orbit in 40 s
+
+    // Period and eccentricity: Pourbaix et al. (2002). Masses: Akeson et al. (2021).
+    // Radii: Kervella et al. (2017). Semi-major axis from Kepler's third law.
+    // Starts at periastron.
+    const double mA = 1.0788, mB = 0.9092, total = mA + mB;
+    const double period = 79.91 * units::DAYS_PER_YEAR;
+    const double a = std::cbrt(units::G * total * period * period / (4.0 * units::PI * units::PI));
+    const OrbitState rel = keplerState(units::G * total, a, 0.5179, 0.0, 0.0);
+
+    bodies.emplace_back("Alpha Centauri A", "G2V star", mA, 1.2234 * units::SOLAR_RADIUS_AU,
+                        Body::blackbody(5790.0), rel.position * (-mB / total), rel.velocity * (-mB / total));
+    bodies.emplace_back("Alpha Centauri B", "K1V star", mB, 0.8632 * units::SOLAR_RADIUS_AU,
+                        Body::blackbody(5260.0), rel.position * (mA / total), rel.velocity * (mA / total));
+}
+
+void Simulation::moveToBarycenter() {
+    double m = 0.0;
+    Vector2D r, p;
+    for (const Body& b : bodies) {
+        m += b.mass;
+        r += b.position * b.mass;
+        p += b.velocity * b.mass;
+    }
+    if (m <= 0.0) return;
+    const Vector2D com = r / m, drift = p / m;
+    for (Body& b : bodies) {
+        b.position -= com;
+        b.velocity -= drift;
+        b.previousPosition = b.position;
+    }
+}
+
+void Simulation::clear() {
+    bodies.clear();
+    flashes.clear();
+    accelerationsStale = true;
+    ++changes;
+}
+
+void Simulation::addBody(double mass, const Vector2D& position, const Vector2D& velocity) {
+    bodies.emplace_back(mass, position, velocity);
+    bodies.back().trailInterval = trailIntervalFor(bodies.size() - 1);
+    accelerationsStale = true;  // Verlet needs the new body's acceleration before its first drift
+    ++changes;
+}
+
+// ---------------------------------------------------------------------------
+// Integration
+
+void Simulation::step() {
+    if (accelerationsStale) {
+        computeAccelerations();
+        accelerationsStale = false;
+        jerkValid = false;
+    }
+
+    // Split the step when bodies come close: each piece is at most ETA times the
+    // tightest dynamical time, so a near miss is followed through its closest
+    // approach. One long step through a near miss overshoots the closest point and
+    // the pair flies apart faster than it came in, which looks like repulsion and
+    // breaks energy conservation. In quiet stretches the whole step is a single
+    // piece, so Verlet stays symplectic.
+    const double minPiece = dt / MAX_SUBSTEPS;
+    double remaining = dt;
+    int pieces = 0;
+    while (remaining > 1e-12 * dt) {
+        double h = std::max(ETA * dynamicalTime(), minPiece);
+        if (h >= remaining) h = remaining;
+        else if (remaining < 1.5 * h) h = 0.5 * remaining;  // no thin sliver at the end
+        verletStep(h);
+        resolveCollisions();
+        remaining -= h;
+        ++pieces;
+    }
+    lastSubsteps = pieces;
+    recordTrails();
+}
+
+void Simulation::verletStep(double h) {
+    // Velocity Verlet: drift with the stored acceleration, recompute, then kick
+    // with the average of the old and new accelerations.
+    const double halfHSq = 0.5 * h * h;
+    oldAcceleration.resize(bodies.size());
+    for (std::size_t i = 0; i < bodies.size(); ++i) {
+        Body& b = bodies[i];
+        b.previousPosition = b.position;
+        b.position += b.velocity * h + b.acceleration * halfHSq;
+        oldAcceleration[i] = b.acceleration;
+    }
+    computeAccelerations();
+    for (std::size_t i = 0; i < bodies.size(); ++i)
+        bodies[i].velocity += (oldAcceleration[i] + bodies[i].acceleration) * (0.5 * h);
+
+    simTime += h;
+    lastSubstep = h;
+    jerkValid = true;
+}
+
+double Simulation::dynamicalTime() const {
+    double t = std::numeric_limits<double>::infinity();
+    const std::size_t n = bodies.size();
+
+    if (n <= DIRECT_LIMIT) {
+        // For each pair, the shorter of its dynamical time sqrt(r^3 / G(m1 + m2))
+        // and the time it takes to close the gap at the current relative speed
+        for (std::size_t i = 0; i < n; ++i) {
+            for (std::size_t j = i + 1; j < n; ++j) {
+                const double r2 = (bodies[j].position - bodies[i].position).lengthSquared();
+                const double mu = units::G * (bodies[i].mass + bodies[j].mass);
+                if (mu > 0.0) t = std::min(t, std::sqrt(r2 * std::sqrt(r2) / mu));
+                const double v2 = (bodies[j].velocity - bodies[i].velocity).lengthSquared();
+                if (v2 > 0.0) t = std::min(t, std::sqrt(r2 / v2));
+            }
         }
-        Vector2D center((lo.x + hi.x) / 2, (lo.y + hi.y) / 2);
-        double halfSize = std::max(hi.x - lo.x, hi.y - lo.y) / 2 + 1.0;
-
-        QuadTree tree(center, halfSize);
-        for (auto& b : bodies) tree.insert(&b);
-        for (auto& b : bodies) b.applyForce(tree.computeForce(b, 0.5));
+        return t;
     }
 
-    // kick - update velocity using the avg of old and new acceleration
-    for (size_t i = 0; i < bodies.size(); ++i) {
-        Vector2D newAccel = bodies[i].force / bodies[i].mass;
-        bodies[i].velocity += (bodies[i].acceleration + newAccel) * (0.5 * dt);
-        bodies[i].acceleration = newAccel; // for the next frame
+    // With many bodies, scanning every pair would cost more than the tree saves.
+    // Use how fast each body's acceleration changed over the last piece: |a| / |da/dt|.
+    if (!jerkValid || oldAcceleration.size() != n) return t;
+    for (std::size_t i = 0; i < n; ++i) {
+        const double change = (bodies[i].acceleration - oldAcceleration[i]).magnitude();
+        if (change > 0.0) t = std::min(t, bodies[i].acceleration.magnitude() * lastSubstep / change);
+    }
+    return t;
+}
 
-        // record trail
-        sf::Vertex vertex;
-        vertex.position = sf::Vector2f(static_cast<float>(bodies[i].position.x),
-                                        static_cast<float>(bodies[i].position.y));
-        vertex.color = bodies[i].color;
-        trails[i].push_back(vertex);
-        if (trails[i].size() > 500) trails[i].pop_front();
+void Simulation::computeAccelerations() {
+    const std::size_t n = bodies.size();
+    const double eps2 = SOFTENING * SOFTENING;
+
+    if (n <= DIRECT_LIMIT) {
+        // Exact pairwise sum, each pair once (Newton's third law)
+        for (Body& b : bodies) b.acceleration = Vector2D();
+        for (std::size_t i = 0; i < n; ++i) {
+            for (std::size_t j = i + 1; j < n; ++j) {
+                const Vector2D d = bodies[j].position - bodies[i].position;
+                const double r2 = d.lengthSquared() + eps2;
+                const double s = units::G / (r2 * std::sqrt(r2));
+                bodies[i].acceleration += d * (s * bodies[j].mass);
+                bodies[j].acceleration -= d * (s * bodies[i].mass);
+            }
+        }
+        return;
     }
 
-    // Merge bodies that get too close
-    for (size_t i = 0; i < bodies.size(); ++i) {
-        for (size_t j = i + 1; j < bodies.size(); ++j) {
-            double r = (bodies[j].position - bodies[i].position).magnitude();
-            double mergeDistance = 2.0 * Body::RADIUS;
-            if (r < mergeDistance) {
-                double m1 = bodies[i].mass, m2 = bodies[j].mass;
-                double total = m1 + m2;
+    tree.build(bodies);
+    for (std::size_t i = 0; i < n; ++i) bodies[i].acceleration = tree.acceleration(i, THETA, eps2);
+}
 
-                // conserve momentum and center of mass
-                bodies[i].velocity = (bodies[i].velocity * m1 + bodies[j].velocity * m2) / total;
-                bodies[i].position = (bodies[i].position * m1 + bodies[j].position * m2) / total;
-                bodies[i].mass = total;
-                bodies[i].color = Body::getColorByMass(total);
-                bodies[i].acceleration = Vector2D(0, 0);
+void Simulation::resolveCollisions() {
+    const std::size_t n = bodies.size();
+    if (n < 2) return;
 
-                // tiny bit of state
-                flashes.push_back({bodies[i].position, 0.f});
-                
-                // remove the absorbed body
-                bodies.erase(bodies.begin() + j);
-                trails.erase(trails.begin() + j);
-                --j;
+    // Sweep and prune along x. Each body covers the stretch it moved this step,
+    // padded by its radius; only overlapping stretches get the exact test.
+    struct Span {
+        double lo, hi;
+        std::size_t index;
+    };
+    std::vector<Span> spans;
+    spans.reserve(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        const Body& b = bodies[i];
+        spans.push_back(Span{std::min(b.previousPosition.x, b.position.x) - b.radius,
+                             std::max(b.previousPosition.x, b.position.x) + b.radius, i});
+    }
+    std::sort(spans.begin(), spans.end(), [](const Span& l, const Span& r) { return l.lo < r.lo; });
+
+    bool merged = false;
+    for (std::size_t s = 0; s < n; ++s) {
+        for (std::size_t t = s + 1; t < n && spans[t].lo <= spans[s].hi; ++t) {
+            const std::size_t i = spans[s].index, j = spans[t].index;
+            if (!bodies[i].alive || !bodies[j].alive) continue;
+            if (sweptContact(bodies[i], bodies[j])) {
+                merge(i, j);
+                merged = true;
             }
         }
     }
-    constexpr float FLASH_LIFETIME = 0.5f;
-    for (auto& f : flashes) f.age += static_cast<float>(dt);
-    flashes.erase(std::remove_if(flashes.begin(), flashes.end(), [](const MergeFlash& f) { return f.age > 0.5f; }), flashes.end());
+
+    if (merged) {
+        bodies.erase(std::remove_if(bodies.begin(), bodies.end(), [](const Body& b) { return !b.alive; }),
+                     bodies.end());
+        jerkValid = false;  // indices shifted, oldAcceleration no longer lines up
+        ++changes;
+    }
 }
 
-void Simulation::draw(sf::RenderWindow& window) {
-    for (size_t i = 0; i < bodies.size(); ++i) {
-        const Body& body = bodies[i];
+void Simulation::merge(std::size_t a, std::size_t b) {
+    // Perfectly inelastic: mass and momentum are conserved and the merged body
+    // carries on from the pair's center of mass. The heavier body keeps its
+    // name, color and trail.
+    const std::size_t keepIndex = bodies[a].mass >= bodies[b].mass ? a : b;
+    const std::size_t goneIndex = keepIndex == a ? b : a;
+    Body& keep = bodies[keepIndex];
+    Body& gone = bodies[goneIndex];
 
-        // draw body
-        float radius = Body::RADIUS;
-        sf::Vector2f pos(static_cast<float>(body.position.x),
-                         static_cast<float>(body.position.y));
+    const double total = keep.mass + gone.mass;
+    const double wk = keep.mass / total, wg = gone.mass / total;
+    keep.position = keep.position * wk + gone.position * wg;
+    keep.previousPosition = keep.previousPosition * wk + gone.previousPosition * wg;
+    keep.velocity = keep.velocity * wk + gone.velocity * wg;
+    // The center of mass accelerates at the mass-weighted mean (internal forces cancel),
+    // so the next drift starts from the right acceleration instead of zero.
+    keep.acceleration = keep.acceleration * wk + gone.acceleration * wg;
 
-        // solid body core
-        sf::CircleShape circle(radius);
-        circle.setFillColor(body.color);
-        circle.setOrigin(sf::Vector2f(radius, radius));
-        circle.setPosition(pos);
-        window.draw(circle);
+    if (keep.isNamed()) {
+        const double rk = keep.radius, rg = gone.radius;
+        keep.radius = std::cbrt(rk * rk * rk + rg * rg * rg);  // volumes add
+    } else {
+        keep.radius = Body::radiusForMass(total);
+        keep.color = Body::colorForMass(total);
+    }
+    keep.mass = total;
+    gone.alive = false;
+    flashes.push_back(MergeFlash{keep.position, 0.f});
+}
 
-        // trail with fade
-        size_t n = trails[i].size();
-        sf::VertexArray trail(sf::PrimitiveType::LineStrip, n);
-        for (size_t j = 0; j < n; ++j) {
-            trail[j] = trails[i][j];
-            trail[j].color.a = static_cast<std::uint8_t>(255 * (j + 1) / n);
+void Simulation::recordTrails() {
+    for (Body& b : bodies) {
+        if (simTime - b.lastTrailTime < b.trailInterval) continue;
+        b.trail.push_back(b.position);
+        if (b.trail.size() > MAX_TRAIL) b.trail.pop_front();
+        b.lastTrailTime = simTime;
+    }
+}
+
+void Simulation::updateEffects(float realDt) {
+    for (MergeFlash& f : flashes) f.age += realDt;
+    flashes.erase(std::remove_if(flashes.begin(), flashes.end(),
+                                 [](const MergeFlash& f) { return f.age > FLASH_LIFETIME; }),
+                  flashes.end());
+}
+
+// ---------------------------------------------------------------------------
+// Queries
+
+int Simulation::strongestPull(const Vector2D& p, int exclude) const {
+    int best = -1;
+    double bestPull = -1.0;
+    for (std::size_t i = 0; i < bodies.size(); ++i) {
+        if (static_cast<int>(i) == exclude) continue;
+        const double r2 = (bodies[i].position - p).lengthSquared() + SOFTENING * SOFTENING;
+        const double pull = bodies[i].mass / r2;
+        if (pull > bestPull) {
+            bestPull = pull;
+            best = static_cast<int>(i);
         }
-        window.draw(trail);
     }
-    
-    // merge flashes -> expansion
-    for (const auto& f : flashes) {
-        float t = f.age / 0.5f;
-        float r = 5.f + 30.f * t;
-        sf::CircleShape ring(r);
-        ring.setOrigin(sf::Vector2f(r, r));
-        ring.setPosition(sf::Vector2f(static_cast<float>(f.position.x),
-                                      static_cast<float>(f.position.y)));
-        ring.setFillColor(sf::Color::Transparent);
-        ring.setOutlineThickness(2.f);
-        ring.setOutlineColor(sf::Color(255, 255, 255,
-                             static_cast<std::uint8_t>(255 * (1.f - t))));
-        window.draw(ring);
-    }
+    return best;
 }
 
-// add a body by a mouse click, parameters: mass, position, velocity 
-void Simulation::addBody(double mass, const Vector2D& position, const Vector2D& velocity) {
-    bodies.emplace_back(Body(mass, position, velocity));
-    trails.emplace_back();
+int Simulation::dominantBody(const Vector2D& p, int exclude) const {
+    // Laplace sphere of influence r = d (m / M)^(2/5), with M the body pulling hardest
+    // on m. The smallest sphere containing p wins: next to the Moon that is Earth,
+    // even though the Sun pulls harder on the Moon than Earth does.
+    int best = -1;
+    double bestRadius = std::numeric_limits<double>::infinity();
+    for (std::size_t i = 0; i < bodies.size(); ++i) {
+        if (static_cast<int>(i) == exclude) continue;
+        const Body& b = bodies[i];
+        const int parent = strongestPull(b.position, static_cast<int>(i));
+        if (parent < 0) continue;
+        const Body& host = bodies[static_cast<std::size_t>(parent)];
+        if (host.mass <= b.mass) continue;  // b is the primary of its pair
+        const double soi = (b.position - host.position).magnitude() * std::pow(b.mass / host.mass, 0.4);
+        if (soi < bestRadius && (p - b.position).magnitude() < soi) {
+            best = static_cast<int>(i);
+            bestRadius = soi;
+        }
+    }
+    return best >= 0 ? best : strongestPull(p, exclude);
+}
+
+Vector2D Simulation::circularVelocity(const Vector2D& p) const {
+    const int hostIndex = dominantBody(p);
+    if (hostIndex < 0) return Vector2D();
+    const Body& host = bodies[static_cast<std::size_t>(hostIndex)];
+    const Vector2D r = p - host.position;
+    const double dist = r.magnitude();
+    if (dist <= 0.0) return host.velocity;
+    const double speed = std::sqrt(units::G * host.mass / dist);
+    // prograde: counterclockwise seen from above, the way the planets go
+    return host.velocity + Vector2D(-r.y, r.x) * (speed / dist);
+}
+
+double Simulation::orbitalPeriodEstimate(std::size_t index) const {
+    const Body& b = bodies[index];
+    const int hostIndex = dominantBody(b.position, static_cast<int>(index));
+    if (hostIndex < 0) return units::DAYS_PER_YEAR;
+    const Body& host = bodies[static_cast<std::size_t>(hostIndex)];
+
+    const Vector2D r = b.position - host.position;
+    const Vector2D v = b.velocity - host.velocity;
+    const double mu = units::G * (host.mass + b.mass);
+    const double dist = std::max(r.magnitude(), 1e-12);
+    // vis-viva: a bound orbit has a semi-major axis; otherwise use the circular period here
+    const double energy = 0.5 * v.lengthSquared() - mu / dist;
+    const double a = energy < 0.0 ? -mu / (2.0 * energy) : dist;
+    return 2.0 * units::PI * std::sqrt(a * a * a / mu);
+}
+
+double Simulation::trailIntervalFor(std::size_t index) const {
+    // 360 samples per orbit, so a full trail shows about two orbits
+    return std::clamp(orbitalPeriodEstimate(index) / 360.0, dt, 3650.0);
+}
+
+std::vector<Vector2D> Simulation::predictPath(const Vector2D& p, const Vector2D& v) const {
+    constexpr int STEPS = 1500;        // steps over the horizon when nothing is close
+    constexpr int MAX_ITERATIONS = 8000;  // cap when close passes shorten the steps
+    constexpr std::size_t MAX_ATTRACTORS = 16;
+    if (bodies.empty()) return {p, p + v * units::DAYS_PER_YEAR};
+
+    // The heaviest bodies carry nearly all the gravity. Integrate them together
+    // with a massless test particle, so the planets move during the prediction.
+    std::vector<std::size_t> order(bodies.size());
+    std::iota(order.begin(), order.end(), std::size_t{0});
+    const std::size_t k = std::min(MAX_ATTRACTORS, order.size());
+    std::partial_sort(order.begin(), order.begin() + static_cast<std::ptrdiff_t>(k), order.end(),
+                      [this](std::size_t a, std::size_t b) { return bodies[a].mass > bodies[b].mass; });
+    order.resize(k);
+    const int hostIndex = dominantBody(p);
+    if (hostIndex >= 0 &&
+        std::find(order.begin(), order.end(), static_cast<std::size_t>(hostIndex)) == order.end())
+        order.back() = static_cast<std::size_t>(hostIndex);  // keep the local host, even if light
+
+    // Horizon: one orbit if bound to the host, otherwise long enough to leave
+    double horizon = units::DAYS_PER_YEAR;
+    if (hostIndex >= 0) {
+        const Body& host = bodies[static_cast<std::size_t>(hostIndex)];
+        const Vector2D r = p - host.position, u = v - host.velocity;
+        const double mu = units::G * host.mass;
+        const double dist = std::max(r.magnitude(), 1e-12);
+        const double energy = 0.5 * u.lengthSquared() - mu / dist;
+        if (energy < 0.0) {
+            const double a = -mu / (2.0 * energy);
+            horizon = 2.0 * units::PI * std::sqrt(a * a * a / mu);
+        } else {
+            horizon = 20.0 * dist / std::max(u.magnitude(), 1e-12);
+        }
+    }
+    horizon = std::clamp(horizon, 20.0 * dt, 500.0 * units::DAYS_PER_YEAR);
+    const double hBase = horizon / STEPS;
+    const double hMin = hBase / 1024.0;
+    const double eps2 = SOFTENING * SOFTENING;
+
+    std::vector<Vector2D> pos(k), vel(k), acc(k), oldAcc(k);
+    std::vector<double> mass(k), radius(k);
+    for (std::size_t i = 0; i < k; ++i) {
+        const Body& b = bodies[order[i]];
+        pos[i] = b.position;
+        vel[i] = b.velocity;
+        mass[i] = b.mass;
+        radius[i] = b.radius;
+    }
+    Vector2D tp = p, tv = v, ta;
+
+    auto computeAcc = [&]() {
+        std::fill(acc.begin(), acc.end(), Vector2D());
+        ta = Vector2D();
+        for (std::size_t i = 0; i < k; ++i) {
+            for (std::size_t j = i + 1; j < k; ++j) {
+                const Vector2D d = pos[j] - pos[i];
+                const double r2 = d.lengthSquared() + eps2;
+                const double s = units::G / (r2 * std::sqrt(r2));
+                acc[i] += d * (s * mass[j]);
+                acc[j] -= d * (s * mass[i]);
+            }
+            const Vector2D d = pos[i] - tp;
+            const double r2 = d.lengthSquared() + eps2;
+            ta += d * (units::G * mass[i] / (r2 * std::sqrt(r2)));
+        }
+    };
+
+    std::vector<Vector2D> path;
+    path.reserve(STEPS / 2 + 2);
+    path.push_back(tp);
+    computeAcc();
+    double elapsed = 0.0, nextSample = 2.0 * hBase;
+    for (int n = 0; n < MAX_ITERATIONS && elapsed < horizon; ++n) {
+        // Shorter steps near an attractor, by the same rule as step()
+        double tMin = std::numeric_limits<double>::infinity();
+        for (std::size_t i = 0; i < k; ++i) {
+            const double r2 = (pos[i] - tp).lengthSquared();
+            tMin = std::min(tMin, std::sqrt(r2 * std::sqrt(r2) / (units::G * mass[i])));
+            const double v2 = (vel[i] - tv).lengthSquared();
+            if (v2 > 0.0) tMin = std::min(tMin, std::sqrt(r2 / v2));
+        }
+        const double h = std::clamp(ETA * tMin, hMin, hBase);
+        const double hh = 0.5 * h * h;
+
+        for (std::size_t i = 0; i < k; ++i) pos[i] += vel[i] * h + acc[i] * hh;
+        tp += tv * h + ta * hh;
+        oldAcc = acc;
+        const Vector2D oldTa = ta;
+        computeAcc();
+        for (std::size_t i = 0; i < k; ++i) vel[i] += (oldAcc[i] + acc[i]) * (0.5 * h);
+        tv += (oldTa + ta) * (0.5 * h);
+        elapsed += h;
+
+        bool hit = false;
+        for (std::size_t i = 0; i < k && !hit; ++i)
+            hit = (pos[i] - tp).lengthSquared() <= radius[i] * radius[i];
+        const bool closePass = h < 0.25 * hBase && n % 4 == 0;  // extra points through a close pass
+        if (hit || closePass || elapsed >= nextSample) {
+            path.push_back(tp);
+            nextSample = elapsed + 2.0 * hBase;
+        }
+        if (hit) break;
+    }
+    return path;
 }
 
 double Simulation::totalEnergy() const {
-    constexpr double G = 6.674e-11;
+    // Kinetic plus the Plummer-softened potential -G m1 m2 / sqrt(r^2 + eps^2),
+    // whose gradient is exactly the force used in the integration
+    const double eps2 = SOFTENING * SOFTENING;
     double kinetic = 0.0, potential = 0.0;
-
-    for (const auto& b : bodies) {
-        double v2 = b.velocity.x * b.velocity.x + b.velocity.y * b.velocity.y;
-        kinetic += 0.5 * b.mass * v2;
-    }
-    constexpr double softening = 5.0;
-    for (size_t i = 0; i < bodies.size(); ++i) {
-        for (size_t j = i + 1; j < bodies.size(); ++j) {
-            double r = (bodies[j].position - bodies[i].position).magnitude();
-            potential += -G * bodies[i].mass * bodies[j].mass / std::sqrt(r * r + Body::SOFTENING * Body::SOFTENING);
+    for (const Body& b : bodies) kinetic += 0.5 * b.mass * b.velocity.lengthSquared();
+    for (std::size_t i = 0; i < bodies.size(); ++i) {
+        for (std::size_t j = i + 1; j < bodies.size(); ++j) {
+            const double r2 = (bodies[j].position - bodies[i].position).lengthSquared();
+            potential -= units::G * bodies[i].mass * bodies[j].mass / std::sqrt(r2 + eps2);
         }
     }
     return kinetic + potential;
 }
 
-void Simulation::clear() {
-    bodies.clear();
-    trails.clear();
-    flashes.clear();
-}
-
-void Simulation::loadSolarSystem() {
-    clear();
-
-    constexpr double G = 6.674e-11;
-    const Vector2D sunPos(400, 300);
-    const double sunMass = 1e14;
-    
-    // place a planet on a circular orbit at radius r
-    auto addPlanet = [&](double mass, double r, double angleDeg) {
-        double a = angleDeg * M_PI / 180.0;
-        Vector2D pos(sunPos.x + std::cos(a) * r,
-                     sunPos.y + std::sin(a) * r);
-        double v = std::sqrt(G * sunMass / r);
-
-        Vector2D vel(-std::sin(a) * v, std::cos(a) * v);
-        bodies.emplace_back(mass, pos, vel);
-        trails.emplace_back();
-    };
-
-    // sun
-    bodies.emplace_back(sunMass, sunPos, Vector2D(0, 0));
-    trails.emplace_back();
-
-    // addPlanet: -- mass -- r -- start angle
-    addPlanet(1e5, 90, 0);    // how inner dwarf
-    addPlanet(4e5, 140, 130);
-    addPlanet(1e6, 200, 250);
-    addPlanet(3e6, 280, 60);
-    addPlanet(5e6, 380, 180); // outer dwarf
-
-    Vector2D totalP(0, 0);
-    for (size_t k = 1; k < bodies.size(); ++k)
-        totalP += bodies[k].velocity * bodies[k].mass;
-    bodies[0].velocity = totalP / (-sunMass);
-}
-
-void Simulation::loadFigureEight() {
-    clear();
-
-    // Chenciner-Montgomery figure-eight
-    const double M = 1e14; // all three bodies
-    const double L = 200.0;
-    const Vector2D c(400, 300);
-
-    const double V = std::sqrt(Body::G * M / L);
-
-    Vector2D r1(0.97000436, -0.24308753);
-    Vector2D v3(-0.93240737, -0.86473146);
-    Vector2D v1 = v3 * -0.5;
-
-    bodies.emplace_back(M, c + r1 * L, v1 * V);
-    bodies.emplace_back(M, c - r1 * L, v1 * V);
-    bodies.emplace_back(M, c, v3 * V);
-    for (int k = 0; k < 3; ++k) trails.emplace_back();
+double Simulation::angularMomentum() const {
+    double l = 0.0;
+    for (const Body& b : bodies) l += b.mass * b.position.cross(b.velocity);
+    return l;
 }
