@@ -7,19 +7,16 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 if(MSVC)
-    # Read every source file as UTF-8, whatever the Windows code page is
-    # (CP949 on Korean Windows, which otherwise trips over non-ASCII comments)
+    # Read every source file as UTF-8
     add_compile_options(/utf-8)
 endif()
 
-# CMake 4 refuses projects that ask for a minimum version below 3.5. Some
-# dependencies SFML downloads still do, so let them configure anyway.
+# CMake 4 refuses projects that ask for a minimum version below 3.5
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 
 include(FetchContent)
 
-# Use an installed SFML 3 if there is one (Homebrew on macOS). Otherwise, as on
-# a fresh Windows machine, download SFML and build it as part of the project.
+# Use an installed SFML 3 if there is one (Homebrew on macOS)
 find_package(SFML 3 COMPONENTS Graphics Window System QUIET)
 if(NOT SFML_FOUND)
     message(STATUS "SFML 3 not installed, building it from source")
@@ -69,8 +66,7 @@ add_executable(nbody
 target_link_libraries(nbody PRIVATE emma_core SFML::Graphics ImGui-SFML::ImGui-SFML)
 
 if(MSVC)
-    # Release builds are windowed apps, with no console window behind EMMA.
-    # mainCRTStartup keeps main() as the entry point.
+    # Release builds are windowed apps, with no console window behind EMMA
     target_link_options(nbody PRIVATE
         $<$<CONFIG:Release>:/SUBSYSTEM:WINDOWS>
         $<$<CONFIG:Release>:/ENTRY:mainCRTStartup>)

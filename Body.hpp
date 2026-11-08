@@ -14,9 +14,9 @@ enum class BodyClass { RockyBody, NeptuneLike, GasGiant, BrownDwarf, Star };
 
 class Body {
 public:
-    // A spawned body: its radius and color follow from its mass.
+    // A spawned body: its radius and color follow from its mass
     Body(double mass, const Vector2D& position, const Vector2D& velocity);
-    // A real body from a preset, with its measured radius, color and type.
+    // A real body from a preset, with its measured radius, color and type
     Body(std::string name, std::string kind, double mass, double radius, Rgb color,
          const Vector2D& position, const Vector2D& velocity);
 
@@ -28,7 +28,7 @@ public:
     Vector2D previousPosition;  // where the body started the current step
     Rgb color;
     std::string name;           // empty for spawned bodies
-    std::string kind;           // "G2V star", "Gas giant"... empty for spawned bodies
+    std::string kind;           // "G2V star", "Gas giant", empty for spawned bodies
     bool alive = true;
 
     std::deque<Vector2D> trail;

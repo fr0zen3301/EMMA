@@ -70,7 +70,6 @@ struct Elements {
     double a, e, longPeri, meanLong;  // AU, -, degrees, degrees
 };
 
-// E. M. Standish, "Keplerian Elements for Approximate Positions of the Major
 // Planets" (JPL), table 1, epoch J2000. Earth and the Moon are placed separately.
 const Elements PLANET_ELEMENTS[] = {
     {1, 0.38709927, 0.20563593, 77.45779628, 252.25032350},
@@ -96,7 +95,6 @@ bool sweptContact(const Body& a, const Body& b) {
 
 } // namespace
 
-// ---------------------------------------------------------------------------
 // Presets
 
 void Simulation::load(Preset preset, const SolarSnapshot* snapshot) {
@@ -117,7 +115,6 @@ void Simulation::load(Preset preset, const SolarSnapshot* snapshot) {
         break;
     }
 
-    baseDt = dt;
     moveToBarycenter();
     accelerationsStale = true;
     ++changes;
@@ -127,7 +124,7 @@ void Simulation::buildSolarSystem(const SolarSnapshot* snapshot) {
     dt = 0.1;              // days: about 880 steps per orbit of Mercury
     calendar = true;
     viewRadiusAU = 1.8;    // Mars's orbit fills the view
-    timeScaleHint = 10.0 / 24.0;  // 10 hours per second: the Moon's month in about a minute
+    timeScaleHint = 30.0;  // an Earth year in about 12 seconds
 
     std::array<Vector2D, SOLAR_BODY_COUNT> position, velocity;
     if (snapshot) {
@@ -145,8 +142,7 @@ void Simulation::buildSolarSystem(const SolarSnapshot* snapshot) {
             velocity[el.body] = s.velocity;
         }
 
-        // Earth and Moon: their barycenter on its J2000 orbit, then the pair around it.
-        // Moon: mean longitude 218.3164 deg and mean anomaly 134.9634 deg at J2000 (Meeus).
+        // Earth and Moon: their barycenter on its J2000 orbit, then the pair around it
         const double earthMass = SOLAR_BODIES[3].mass, moonMass = SOLAR_BODIES[4].mass;
         const double pairMass = earthMass + moonMass;
         const OrbitState bary = keplerState(units::G * (1.0 + pairMass), 1.00000261, 0.01671123,
@@ -173,8 +169,6 @@ void Simulation::buildAlphaCentauri() {
     viewRadiusAU = 22.0;
     timeScaleHint = 2.0 * units::DAYS_PER_YEAR;  // two years per second: one orbit in 40 s
 
-    // Period and eccentricity: Pourbaix et al. (2002). Masses: Akeson et al. (2021).
-    // Radii: Kervella et al. (2017). Semi-major axis from Kepler's third law.
     // Starts at periastron.
     const double mA = 1.0788, mB = 0.9092, total = mA + mB;
     const double period = 79.91 * units::DAYS_PER_YEAR;
@@ -217,7 +211,6 @@ void Simulation::addBody(double mass, const Vector2D& position, const Vector2D& 
     ++changes;
 }
 
-// ---------------------------------------------------------------------------
 // Integration
 
 void Simulation::step() {
@@ -239,20 +232,14 @@ void Simulation::step() {
     while (remaining > 1e-12 * dt) {
         double h = std::max(ETA * dynamicalTime(), minPiece);
         if (h >= remaining) h = remaining;
-        else if (remaining < 1.5 * h) h = 0.5 * remaining;  // no thin sliver at the end
+        else if (remaining < 1.5 * h) h = 0.5 * remaining;
         verletStep(h);
         resolveCollisions();
-        recordTrails();  // per piece, so trails stay smooth through a close pass too
+        recordTrails();  // trails stay smooth through a close pass
         remaining -= h;
         ++pieces;
     }
     lastSubsteps = pieces;
-}
-
-void Simulation::limitStep(double maxDays) {
-    // At slow speeds the preset's step would advance only a few times per second
-    // and bodies would jump. Shorter steps cost little there and keep it smooth.
-    dt = std::clamp(maxDays, baseDt / 1024.0, baseDt);
 }
 
 void Simulation::verletStep(double h) {
@@ -367,7 +354,7 @@ void Simulation::resolveCollisions() {
 }
 
 void Simulation::merge(std::size_t a, std::size_t b) {
-    // Perfectly inelastic: mass and momentum are conserved and the merged body
+    // mass and momentum are conserved and the merged body
     // carries on from the pair's center of mass. The heavier body keeps its
     // name, color and trail.
     const std::size_t keepIndex = bodies[a].mass >= bodies[b].mass ? a : b;
@@ -398,9 +385,7 @@ void Simulation::merge(std::size_t a, std::size_t b) {
 
 void Simulation::recordTrails() {
     // A new point each time a body's direction of travel has turned by TRAIL_TURN
-    // since the last one. Curves stay smooth however tight or wide the orbit, and
-    // a straight stretch costs no points: the renderer joins the newest point to
-    // the body itself.
+    // since the last one
     static const double cosTurn = std::cos(TRAIL_TURN);
     for (Body& b : bodies) {
         const double speed = b.velocity.magnitude();
@@ -420,7 +405,6 @@ void Simulation::updateEffects(float realDt) {
                   flashes.end());
 }
 
-// ---------------------------------------------------------------------------
 // Queries
 
 int Simulation::strongestPull(const Vector2D& p, int exclude) const {
@@ -439,11 +423,7 @@ int Simulation::strongestPull(const Vector2D& p, int exclude) const {
 }
 
 int Simulation::dominantBody(const Vector2D& p, int exclude) const {
-    // Laplace sphere of influence r = d (m / M)^(2/5), with M the body pulling hardest
-    // on m. The smallest sphere containing p wins, so close to Earth that is Earth,
-    // even where the Sun pulls harder. The formula only holds when m is much lighter
-    // than M: the two stars of Alpha Centauri have no such spheres, and there the
-    // strongest pull decides.
+    // Laplace sphere of influence r = d (m / M)^(2/5), with M the body pulling hardest on m
     int best = -1;
     double bestRadius = std::numeric_limits<double>::infinity();
     for (std::size_t i = 0; i < bodies.size(); ++i) {
@@ -470,7 +450,7 @@ Vector2D Simulation::circularVelocity(const Vector2D& p) const {
     const double dist = r.magnitude();
     if (dist <= 0.0) return host.velocity;
     const double speed = std::sqrt(units::G * host.mass / dist);
-    // prograde: counterclockwise seen from above, the way the planets go
+    // counterclockwise seen from above, the way the planets go
     return host.velocity + Vector2D(-r.y, r.x) * (speed / dist);
 }
 

@@ -8,7 +8,7 @@
 #include <vector>
 
 // Everything the sidebar can change. main.cpp reads the *Requested flags each
-// frame and clears them once handled.
+// frame and clears them once handled
 struct UiState {
     float timeScale = 30.f;  // simulated days per real second
     bool paused = false;
@@ -57,4 +57,4 @@ std::string formatDistance(double au);
 std::string formatRate(double daysPerSecond);
 std::string formatDuration(double days);
 
-} // namespace ui
+}

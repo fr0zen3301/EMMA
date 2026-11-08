@@ -1,7 +1,3 @@
-// Physics regression tests for EMMA. Each test checks a number that only comes
-// out right when the physics is right, so a change that breaks the integrator,
-// the forces or the presets fails here instead of quietly looking plausible.
-//
 // Run them all:  ctest --test-dir build -C Release --output-on-failure
 // Run one:       build/Release/physics_tests earth_year
 
@@ -88,7 +84,7 @@ void testHorizonsParse() {
 
 void testJ2000Start() {
     // On 1 January 2000, two days before perihelion, Earth was 0.9833 AU from the
-    // Sun at heliocentric longitude 100.38 deg (the Sun appeared at 280.38 deg)
+    // Sun at heliocentric longitude 100.38 deg
     Simulation sim;
     sim.load(Preset::SolarSystem);
     const Vector2D r = find(sim, "Earth").position - find(sim, "Sun").position;
@@ -102,8 +98,7 @@ void testJ2000Start() {
 
 void testEarthYear() {
     // Time for the Earth-Moon barycenter to go once around the Sun. The sidereal
-    // year is 365.2564 days; the other planets move a single orbit by minutes,
-    // so a miss of more than about an hour means the physics changed.
+    // year is 365.2564 days
     Simulation sim;
     sim.load(Preset::SolarSystem);
     auto angle = [&sim]() {
@@ -135,8 +130,7 @@ void testEarthYear() {
 }
 
 void testConservation() {
-    // Ten years of the solar system. Verlet keeps the energy error bounded and
-    // conserves angular momentum exactly for central forces, up to rounding.
+    // Ten years of the solar system
     Simulation sim;
     sim.load(Preset::SolarSystem);
     const double e0 = sim.totalEnergy(), l0 = sim.angularMomentum();
@@ -158,10 +152,7 @@ void testConservation() {
 }
 
 void testClosePass() {
-    // Two Earth-mass bodies miss each other by about 5 Earth radii at 4 km/s.
-    // Their orbital energy must come out unchanged. A step that jumps past the
-    // closest point flings them apart faster: the repulsion seen before steps
-    // could split.
+    // Two Earth-mass bodies miss each other by about 5 Earth radii at 4 km/s
     Simulation sim;
     sim.load(Preset::Empty);
     const double m = units::EARTH_MASS;
@@ -215,8 +206,7 @@ void testHeadOnMerge() {
 
 void testBarnesHut() {
     // The tree against an exact sum over 300 random bodies. With an opening angle
-    // of 0 the tree never approximates, so it must match to rounding; at the
-    // working angle the typical error must stay small.
+    // of 0 the tree never approximates, so it must match to rounding
     std::mt19937 rng(42);
     std::uniform_real_distribution<double> coordinate(-10.0, 10.0), mass(1e-6, 1e-3);
     std::vector<Body> bodies;
@@ -257,9 +247,7 @@ int indexOf(const Simulation& sim, const char* name) {
 }
 
 void testDominantBody() {
-    // The body that rules a spot sets circular orbits, launch speeds and tooltips.
-    // Alpha Centauri's stars are similar in mass, so neither has a sphere of
-    // influence around the other: next to each star, that star rules.
+    // The body that rules a spot sets circular orbits, launch speeds and tooltips
     Simulation binary;
     binary.load(Preset::AlphaCentauri);
     const int a = indexOf(binary, "Alpha Centauri A"), b = indexOf(binary, "Alpha Centauri B");
@@ -281,9 +269,7 @@ void testDominantBody() {
 }
 
 void testTrailSmoothness() {
-    // A planet put on a circular 1 AU orbit around Alpha Centauri A. After two
-    // years it should still be about 1 AU from A, and its trail should bend by only
-    // a couple of degrees between points, so it draws as a smooth curve.
+    // A planet put on a circular 1 AU orbit around Alpha Centauri A
     Simulation sim;
     sim.load(Preset::AlphaCentauri);
     const Vector2D start = find(sim, "Alpha Centauri A").position + Vector2D(1.0, 0.0);
@@ -326,7 +312,7 @@ const Test TESTS[] = {
     {"trail_smoothness", testTrailSmoothness},
 };
 
-} // namespace
+}
 
 int main(int argc, char** argv) {
     const char* only = argc > 1 ? argv[1] : nullptr;

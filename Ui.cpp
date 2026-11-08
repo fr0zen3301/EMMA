@@ -12,7 +12,7 @@
 
 namespace {
 
-const ImVec4 ACCENT(0.851f, 0.812f, 1.0f, 1.0f);  // #D9CFFF, the lavender from the GitHub badges
+const ImVec4 ACCENT(0.851f, 0.812f, 1.0f, 1.0f);
 const ImVec4 MUTED(0.55f, 0.56f, 0.60f, 1.0f);
 const ImVec4 GOOD(0.56f, 0.89f, 0.69f, 1.0f);
 const ImVec4 WARN(1.0f, 0.75f, 0.42f, 1.0f);
@@ -26,7 +26,6 @@ std::string printf_string(const char* pattern, Args... args) {
     return std::string(buffer);
 }
 
-// Two decimals for everyday numbers, scientific notation for very small or large ones
 std::string number(double v) {
     const double a = std::abs(v);
     if (a == 0.0 || (a >= 0.01 && a < 10000.0)) return printf_string("%.2f", v);
@@ -53,7 +52,7 @@ ImVec4 driftColor(double drift) {
     return WARN;
 }
 
-// A round dial for the launch direction. Angle in radians, counterclockwise from +x.
+// A round dial for the launch direction. Angle in radians, counterclockwise from +x
 bool angleDial(const char* id, float& angle, float radius) {
     const ImVec2 origin = ImGui::GetCursorScreenPos();
     ImGui::InvisibleButton(id, ImVec2(radius * 2.f, radius * 2.f));
@@ -116,7 +115,6 @@ void applyTheme() {
 
 void loadFont(const std::filesystem::path& exeDir) {
     namespace fs = std::filesystem;
-    // Look next to the working directory first, then next to the executable
     const fs::path candidates[] = {fs::path("fonts") / "font.otf", exeDir / "fonts" / "font.otf"};
     for (const fs::path& path : candidates) {
         std::error_code ec;
@@ -380,9 +378,7 @@ std::string formatRate(double daysPerSecond) {
 
 std::string formatDuration(double days) {
     if (days >= units::DAYS_PER_YEAR) return printf_string("%.2f years", days / units::DAYS_PER_YEAR);
-    if (days >= 1.0) return printf_string("%.1f days", days);
-    if (days >= 1.0 / 24.0) return printf_string("%.1f hours", days * 24.0);
-    return printf_string("%.0f min", days * 1440.0);
+    return printf_string("%.1f days", days);
 }
 
-} // namespace ui
+}

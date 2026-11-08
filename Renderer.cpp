@@ -20,7 +20,7 @@ void drawDisc(sf::RenderTarget& target, sf::Vector2f at, float radius, sf::Color
     target.draw(disc);
 }
 
-} // namespace
+}
 
 Renderer::Renderer() {
     // Background stars are effectively infinitely far away, so they stay fixed on

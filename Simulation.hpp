@@ -14,7 +14,7 @@ enum class Preset { SolarSystem = 0, AlphaCentauri = 1, Empty = 2 };
 // Sun, Mercury, Venus, Earth, Moon, Mars, Jupiter, Saturn, Uranus, Neptune
 constexpr std::size_t SOLAR_BODY_COUNT = 10;
 
-// Measured starting state for the solar system (AU and AU/day, ecliptic plane).
+// Measured starting state for the solar system (AU and AU/day, ecliptic plane)
 // Any origin works: load() moves everything to the barycenter.
 struct SolarSnapshot {
     double julianDay = 0.0;  // UTC
@@ -27,7 +27,7 @@ struct MergeFlash {
     float age = 0.f;  // seconds of real time
 };
 
-// The physics. No rendering in here: units are AU, solar masses and days throughout.
+// The physics. No rendering in here
 class Simulation {
 public:
     static constexpr float FLASH_LIFETIME = 0.5f;    // seconds of real time
@@ -44,13 +44,12 @@ public:
     void clear();
 
     void step();                       // one fixed step of timeStep() days
-    void limitStep(double maxDays);    // shorter steps when time runs slowly, so motion stays smooth
     void updateEffects(float realDt);  // merge flashes, in real time
 
     void addBody(double mass, const Vector2D& position, const Vector2D& velocity);
 
     // The body whose gravity dominates at p: the smallest Laplace sphere of
-    // influence containing p, otherwise the strongest pull. -1 with no bodies.
+    // influence containing p, otherwise the strongest pull. -1 with no bodies
     int dominantBody(const Vector2D& p, int exclude = -1) const;
     // Velocity for a circular, prograde orbit around the dominant body at p
     Vector2D circularVelocity(const Vector2D& p) const;
@@ -68,7 +67,7 @@ public:
     bool hasCalendar() const { return calendar; }  // true when time 0 is a real date
     double epoch() const { return epochJD; }       // Julian day at time 0
     double viewRadius() const { return viewRadiusAU; }
-    double suggestedTimeScale() const { return timeScaleHint; }  // days per real second
+    double suggestedTimeScale() const { return timeScaleHint; }
     Preset preset() const { return currentPreset; }
     unsigned long long changeCount() const { return changes; }  // bumps on add, merge, load, clear
 
@@ -91,8 +90,7 @@ private:
     QuadTree tree;
     Preset currentPreset = Preset::SolarSystem;
     double simTime = 0.0;
-    double dt = 0.1;      // the step in use
-    double baseDt = 0.1;  // the preset's own step, the longest dt can be
+    double dt = 0.1;
     double viewRadiusAU = 2.0;
     double timeScaleHint = 30.0;
     bool calendar = false;

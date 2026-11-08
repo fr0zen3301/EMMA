@@ -18,7 +18,6 @@ double startOfDay(double jd) {
 }
 
 std::string date(double jd) {
-    // Julian day to Gregorian calendar date (Meeus, Astronomical Algorithms, ch. 7)
     const double z = std::floor(jd + 0.5);
     const double f = jd + 0.5 - z;
     double a = z;
@@ -39,4 +38,4 @@ std::string date(double jd) {
     return text;
 }
 
-} // namespace calendar
+}
