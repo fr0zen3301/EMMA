@@ -1,10 +1,10 @@
-#include "Calendar.hpp"
+#include "emma/Calendar.hpp"
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <ctime>
 
-namespace calendar {
+namespace emma::calendar {
 
 double julianDayNow() {
     // The system clock counts from the Unix epoch, 1970-01-01 00:00 UTC = JD 2440587.5

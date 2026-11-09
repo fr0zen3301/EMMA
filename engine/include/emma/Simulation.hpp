@@ -1,12 +1,14 @@
 #ifndef SIMULATION_HPP
 #define SIMULATION_HPP
 
-#include "Body.hpp"
-#include "Constants.hpp"
-#include "QuadTree.hpp"
+#include "emma/Body.hpp"
+#include "emma/Constants.hpp"
+#include "emma/QuadTree.hpp"
 #include <array>
 #include <cstddef>
 #include <vector>
+
+namespace emma {
 
 enum class Preset { SolarSystem = 0, AlphaCentauri = 1, Empty = 2 };
 
@@ -106,5 +108,7 @@ private:
     int lastSubsteps = 1;
     unsigned long long changes = 0;
 };
+
+} // namespace emma
 
 #endif

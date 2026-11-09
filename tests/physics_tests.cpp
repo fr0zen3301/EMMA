@@ -1,12 +1,13 @@
 // Run them all:  ctest --test-dir build -C Release --output-on-failure
 // Run one:       build/Release/physics_tests earth_year
 
-#include "Body.hpp"
-#include "Calendar.hpp"
-#include "Constants.hpp"
-#include "Horizons.hpp"
-#include "QuadTree.hpp"
-#include "Simulation.hpp"
+#include "emma/Body.hpp"
+#include "emma/Calendar.hpp"
+#include "emma/Clock.hpp"
+#include "emma/Constants.hpp"
+#include "emma/Horizons.hpp"
+#include "emma/QuadTree.hpp"
+#include "emma/Simulation.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -16,6 +17,8 @@
 #include <random>
 #include <string>
 #include <vector>
+
+using namespace emma;
 
 namespace {
 
@@ -294,6 +297,46 @@ void testTrailSmoothness() {
     CHECK(worst < 5.0, "the trail bends by %.1f deg at one point, it will look jagged", worst);
 }
 
+void testClock() {
+    const double frame = 1.0 / 60.0;
+    Simulation sim;
+    sim.load(Preset::SolarSystem);
+    CHECK(sim.hasCalendar(), "the solar system has no calendar");
+    if (!sim.hasCalendar()) return;
+
+    // Speed: one real second at 10 days/s runs 10 simulated days
+    emma::Clock clock;
+    clock.timeScale = 10.0;
+    for (int i = 0; i < 60; ++i) clock.run(sim, frame);
+    CHECK(std::abs(sim.time() - 10.0) < 0.15, "a second at 10 days/s ran %.3f days", sim.time());
+
+    // Paused: nothing moves, until a step request, which steps and stays paused
+    clock.paused = true;
+    const double before = sim.time();
+    clock.run(sim, frame);
+    CHECK(sim.time() == before, "time moved while paused");
+    clock.requestStep();
+    clock.run(sim, frame);
+    CHECK(sim.time() > before && clock.paused, "a step request didn't step and stay paused");
+
+    // Real time: the simulation's clock lands on "now", even a month behind
+    sim.load(Preset::SolarSystem);
+    clock = emma::Clock();
+    clock.live = true;
+    const double now = sim.epoch() + 30.25;
+    for (int i = 0; i < 10; ++i) clock.run(sim, frame, now);
+    const double lag = (now - (sim.epoch() + sim.time())) * units::SECONDS_PER_DAY;
+    std::printf("  real time: %.6f s behind after catching up 30.25 days\n", lag);
+    CHECK(std::abs(lag) < 1.0, "real time is %.3f s off the clock", lag);
+    CHECK(sim.timeStep() < 1.0 / 86400.0, "the step is %.3g days, real time should step by fractions of a second",
+          sim.timeStep());
+
+    // Real time needs dates: Alpha Centauri turns it off
+    sim.load(Preset::AlphaCentauri);
+    clock.run(sim, frame, now);
+    CHECK(!clock.live, "real time stayed on without a calendar");
+}
+
 struct Test {
     const char* name;
     void (*run)();
@@ -310,6 +353,7 @@ const Test TESTS[] = {
     {"barnes_hut", testBarnesHut},
     {"dominant_body", testDominantBody},
     {"trail_smoothness", testTrailSmoothness},
+    {"clock", testClock},
 };
 
 }

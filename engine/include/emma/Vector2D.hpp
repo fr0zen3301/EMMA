@@ -3,6 +3,8 @@
 
 #include <cmath>
 
+namespace emma {
+
 // Header-only 2D vector in double precision
 struct Vector2D {
     double x = 0.0;
@@ -37,5 +39,7 @@ struct Vector2D {
         return m > 0.0 ? *this / m : Vector2D();
     }
 };
+
+} // namespace emma
 
 #endif

@@ -1,11 +1,13 @@
-#include "Simulation.hpp"
-#include "Constants.hpp"
+#include "emma/Simulation.hpp"
+#include "emma/Constants.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <iterator>
 #include <limits>
 #include <numeric>
+
+namespace emma {
 
 namespace {
 
@@ -585,3 +587,5 @@ double Simulation::angularMomentum() const {
     for (const Body& b : bodies) l += b.mass * b.position.cross(b.velocity);
     return l;
 }
+
+} // namespace emma

@@ -1,8 +1,10 @@
 #pragma once
-#include "Vector2D.hpp"
+#include "emma/Vector2D.hpp"
 #include <cstdint>
 #include <deque>
 #include <string>
+
+namespace emma {
 
 struct Rgb {
     std::uint8_t r = 255;
@@ -44,3 +46,5 @@ public:
     static Rgb colorForMass(double mass);
     static Rgb blackbody(double kelvin);
 };
+
+} // namespace emma

@@ -1,5 +1,5 @@
 #pragma once
-#include "Simulation.hpp"
+#include "emma/Simulation.hpp"
 #include <atomic>
 #include <filesystem>
 #include <optional>
@@ -7,7 +7,7 @@
 
 // Today's positions for the solar system preset, from NASA JPL's Horizons
 // service (https://ssd.jpl.nasa.gov/horizons/), built on the DE441 ephemeris
-namespace horizons {
+namespace emma::horizons {
 
 struct Result {
     bool ok = false;

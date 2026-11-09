@@ -1,20 +1,16 @@
 #pragma once
-#include "Body.hpp"
 #include "Camera.hpp"
-#include "Simulation.hpp"
+#include "emma/Body.hpp"
+#include "emma/Clock.hpp"
+#include "emma/Simulation.hpp"
 #include <cstddef>
 #include <filesystem>
 #include <string>
 #include <vector>
 
-// Everything the sidebar can change. main.cpp reads the *Requested flags each
-// frame and clears them once handled
+// Everything the sidebar can change, apart from time (that's emma::Clock). main.cpp
+// reads the *Requested flags each frame and clears them once handled
 struct UiState {
-    float timeScale = 30.f;  // simulated days per real second
-    bool live = false;       // real time: one second per second, kept in step with the computer's clock
-    bool paused = false;
-    bool stepRequested = false;
-
     float massExponent = -5.52f;  // log10(mass / Msun); -5.52 is one Earth mass
     float speedKms = 0.f;         // launch speed, relative to the dominant body
     float angle = 0.f;            // launch direction, radians counterclockwise from +x
@@ -46,11 +42,12 @@ namespace ui {
 void applyTheme();
 void loadFont(const std::filesystem::path& exeDir);
 
-void drawSidebar(UiState& state, const Stats& stats, Preset preset, float width, float height);
-void drawStatusBar(const Simulation& sim, const Camera& camera, sf::Vector2f mouse, const UiState& state,
+void drawSidebar(UiState& state, emma::Clock& clock, const Stats& stats, emma::Preset preset, float width,
+                 float height);
+void drawStatusBar(const emma::Simulation& sim, const Camera& camera, sf::Vector2f mouse, const emma::Clock& clock,
                    float y, float width, float height);
-void drawLabels(const Camera& camera, const std::vector<Body>& bodies);
-void drawBodyTooltip(const Simulation& sim, const Camera& camera, sf::Vector2f mouse);
+void drawLabels(const Camera& camera, const std::vector<emma::Body>& bodies);
+void drawBodyTooltip(const emma::Simulation& sim, const Camera& camera, sf::Vector2f mouse);
 void drawLaunchReadout(sf::Vector2f at, double speedKms, double angleRad);
 
 std::string formatMass(double massSolar);

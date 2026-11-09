@@ -1,8 +1,10 @@
-#include "Body.hpp"
-#include "Constants.hpp"
+#include "emma/Body.hpp"
+#include "emma/Constants.hpp"
 #include <algorithm>
 #include <cmath>
 #include <utility>
+
+namespace emma {
 
 namespace {
 
@@ -119,3 +121,5 @@ Rgb Body::blackbody(double kelvin) {
     auto channel = [](double v) { return static_cast<std::uint8_t>(std::clamp(v, 0.0, 255.0)); };
     return Rgb{channel(r), channel(g), channel(b)};
 }
+
+} // namespace emma

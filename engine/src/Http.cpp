@@ -37,7 +37,7 @@ std::string describe(DWORD code) {
 
 } // namespace
 
-namespace http {
+namespace emma::http {
 
 bool get(const std::string& url, std::string& body, std::string& error) {
     body.clear();
@@ -118,7 +118,7 @@ bool get(const std::string& url, std::string& body, std::string& error) {
 #include <array>
 #include <cstdio>
 
-namespace http {
+namespace emma::http {
 
 bool get(const std::string& url, std::string& body, std::string& error) {
     body.clear();

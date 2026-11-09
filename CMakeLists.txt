@@ -45,24 +45,29 @@ FetchContent_Declare(imgui-sfml
     GIT_SHALLOW ON)
 FetchContent_MakeAvailable(imgui-sfml)
 
-# The physics, the JPL Horizons download and the calendar: everything with no
-# graphics, so the tests can link it without SFML
+# The engine: physics, time, the JPL Horizons download and the calendar. No
+# graphics, so the tests can link it without SFML. Public headers are included
+# as "emma/Simulation.hpp" and so on, anything in engine/src stays private
 add_library(emma_core STATIC
-    Simulation.cpp
-    Body.cpp
-    QuadTree.cpp
-    Calendar.cpp
-    Horizons.cpp
-    Http.cpp)
-target_include_directories(emma_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+    engine/src/Simulation.cpp
+    engine/src/Clock.cpp
+    engine/src/Body.cpp
+    engine/src/QuadTree.cpp
+    engine/src/Calendar.cpp
+    engine/src/Horizons.cpp
+    engine/src/Http.cpp)
+target_include_directories(emma_core
+    PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/engine/include
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/engine/src)
 if(WIN32)
     target_link_libraries(emma_core PUBLIC winhttp)  # HTTPS on Windows, built into the OS
 endif()
 
+# The app: the window, drawing and the sidebar, built on the engine
 add_executable(nbody
-    main.cpp
-    Renderer.cpp
-    Ui.cpp)
+    app/main.cpp
+    app/Renderer.cpp
+    app/Ui.cpp)
 target_link_libraries(nbody PRIVATE emma_core SFML::Graphics ImGui-SFML::ImGui-SFML)
 
 if(MSVC)
@@ -83,6 +88,6 @@ enable_testing()
 add_executable(physics_tests tests/physics_tests.cpp)
 target_link_libraries(physics_tests PRIVATE emma_core)
 foreach(test calendar horizons_parse j2000_start earth_year conservation close_pass head_on_merge barnes_hut
-             dominant_body trail_smoothness)
+             dominant_body trail_smoothness clock)
     add_test(NAME ${test} COMMAND physics_tests ${test})
 endforeach()

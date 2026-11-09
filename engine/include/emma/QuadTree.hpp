@@ -1,7 +1,9 @@
 #pragma once
-#include "Vector2D.hpp"
+#include "emma/Vector2D.hpp"
 #include <cstddef>
 #include <vector>
+
+namespace emma {
 
 class Body;
 
@@ -32,3 +34,5 @@ private:
     const std::vector<Body>* source = nullptr;
     mutable std::vector<int> stack;  // traversal scratch space
 };
+
+} // namespace emma

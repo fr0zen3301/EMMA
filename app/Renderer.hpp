@@ -1,7 +1,7 @@
 #pragma once
-#include "Body.hpp"
 #include "Camera.hpp"
-#include "Simulation.hpp"
+#include "emma/Body.hpp"
+#include "emma/Simulation.hpp"
 #include <SFML/Graphics.hpp>
 #include <cstddef>
 #include <vector>
@@ -12,11 +12,13 @@ public:
     Renderer();
 
     void drawStarfield(sf::RenderTarget& target) const;
-    void drawTrails(sf::RenderTarget& target, const Camera& camera, const std::vector<Body>& bodies);
-    void drawBodies(sf::RenderTarget& target, const Camera& camera, const std::vector<Body>& bodies);
-    void drawFlashes(sf::RenderTarget& target, const Camera& camera, const std::vector<MergeFlash>& flashes) const;
-    void drawPath(sf::RenderTarget& target, const Camera& camera, const std::vector<Vector2D>& path, Rgb color);
-    void drawGhost(sf::RenderTarget& target, sf::Vector2f at, float radius, Rgb color) const;
+    void drawTrails(sf::RenderTarget& target, const Camera& camera, const std::vector<emma::Body>& bodies);
+    void drawBodies(sf::RenderTarget& target, const Camera& camera, const std::vector<emma::Body>& bodies);
+    void drawFlashes(sf::RenderTarget& target, const Camera& camera,
+                     const std::vector<emma::MergeFlash>& flashes) const;
+    void drawPath(sf::RenderTarget& target, const Camera& camera, const std::vector<emma::Vector2D>& path,
+                  emma::Rgb color);
+    void drawGhost(sf::RenderTarget& target, sf::Vector2f at, float radius, emma::Rgb color) const;
     void drawArrow(sf::RenderTarget& target, sf::Vector2f from, sf::Vector2f to, sf::Color color) const;
 
     // On-screen radius in pixels: the true size once you zoom in far enough,

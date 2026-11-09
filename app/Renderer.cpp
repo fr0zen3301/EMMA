@@ -5,6 +5,8 @@
 #include <numeric>
 #include <random>
 
+using namespace emma;  // the app is built on the engine
+
 namespace {
 
 sf::Color toColor(Rgb c, std::uint8_t alpha = 255) {

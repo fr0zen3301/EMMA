@@ -9,7 +9,7 @@ It runs in real units. Distances are in astronomical units, masses in solar mass
 - Watch the Sun, the eight planets and the Moon move on from where they are today, or switch to Alpha Centauri A and B, a real pair of stars on an 80-year orbit.
 - Add a body anywhere. A click places it; pressing and dragging sets its speed and direction, and a dashed line shows where it will go before you let go.
 - Tick "Circular orbit" and a click puts the new body on a circular orbit around whatever dominates gravity at that spot. That is the Sun almost everywhere, and Earth when you click close to Earth.
-- Run time from a few hours per second up to ten years per second, pause, or step one frame at a time.
+- Run in real time, one second per second in step with your clock, or anywhere from a few hours per second up to ten years per second. Pause, or step one frame at a time.
 - Zoom from Neptune's orbit down to the Earth and Moon, and hover over any body to see its mass, radius, distance and speed.
 
 ## Controls
@@ -29,7 +29,7 @@ Speeds are measured relative to the body that dominates gravity where you click,
 
 ## The interface
 
-The sidebar on the left has five sections. Simulation sets how fast time runs (the solar system starts at 10 hours per second) and holds Clear, Reset and Fit view. System switches between the solar system, Alpha Centauri and empty space, and says where the solar system's starting positions came from. New body sets the mass, speed and direction of the next body; a swatch shows the color and class it will get, from a rocky body up to an O-type star. View turns trails and labels on and off. Stats shows the body count, the frame rate, and the relative drift in total energy and angular momentum, with a graph of the last 30 seconds.
+The sidebar on the left has five sections. Simulation sets how fast time runs (the solar system starts in real time) and holds Clear, Reset and Fit view. System switches between the solar system, Alpha Centauri and empty space, and says where the solar system's starting positions came from. New body sets the mass, speed and direction of the next body; a swatch shows the color and class it will get, from a rocky body up to an O-type star. View turns trails and labels on and off. Stats shows the body count, the frame rate, and the relative drift in total energy and angular momentum, with a graph of the last 30 seconds.
 
 The status bar along the bottom shows how wide the view is, the cursor position in AU, the date (or the elapsed time outside the solar system) and the size of the time step, with the number of pieces it was split into during a close pass.
 
@@ -133,22 +133,28 @@ ctest --test-dir build -C Release --output-on-failure
 
 ## Project structure
 
+EMMA is split into an engine and an app. The engine (`engine/`, built as the `emma_core` library) has no graphics: the physics, time, the Horizons download and the calendar, all in `namespace emma`. The app (`app/`) is the window, drawing and sidebar, built on the engine with SFML and Dear ImGui.
+
 | File | Role |
 |------|------|
-| `main.cpp` | Window, event loop, input (click, drag-launch, pan, zoom), fixed-step timing, the drift readout and the background Horizons download |
+| `engine/include/emma/` | The engine's public headers, included as `"emma/Simulation.hpp"` and so on |
 | `Simulation.hpp` / `Simulation.cpp` | The bodies and the physics: Verlet steps, forces, collisions, trails, presets, path prediction, energy |
+| `Clock.hpp` / `Clock.cpp` | Time: speed, pause, single steps, real time, and how many fixed steps each frame runs |
 | `Body.hpp` / `Body.cpp` | A single body, plus the mass-radius, temperature and color relations |
 | `QuadTree.hpp` / `QuadTree.cpp` | Barnes-Hut tree for systems above 64 bodies |
-| `Camera.hpp` | Converts between AU and pixels, with zoom and pan |
-| `Renderer.hpp` / `Renderer.cpp` | Starfield, trails, bodies, merge rings, predicted path and launch arrow |
-| `Ui.hpp` / `Ui.cpp` | Sidebar, status bar, labels, tooltips and the color theme |
 | `Horizons.hpp` / `Horizons.cpp` | Today's positions from JPL Horizons: the requests, the parser and the cache |
-| `Http.hpp` / `Http.cpp` | HTTPS requests, with WinHTTP on Windows and the system curl elsewhere |
-| `Calendar.hpp` / `Calendar.cpp` | Julian days and calendar dates |
+| `Calendar.hpp` / `Calendar.cpp` | Julian days, calendar dates and local time |
 | `Constants.hpp` | Units and physical constants |
 | `Vector2D.hpp` | Header-only 2D vector |
-| `tests/physics_tests.cpp` | Physics tests, run through CTest |
+| `engine/src/Http.hpp` / `Http.cpp` | HTTPS requests, with WinHTTP on Windows and the system curl elsewhere. Private to the engine |
+| `app/main.cpp` | Window, event loop, input (click, drag-launch, pan, zoom), the drift readout and the background Horizons download |
+| `app/Camera.hpp` | Converts between AU and pixels, with zoom and pan |
+| `app/Renderer.hpp` / `Renderer.cpp` | Starfield, trails, bodies, merge rings, predicted path and launch arrow |
+| `app/Ui.hpp` / `Ui.cpp` | Sidebar, status bar, labels, tooltips and the color theme |
+| `tests/physics_tests.cpp` | Engine tests, run through CTest |
 | `CMakeLists.txt` | Build recipe: uses an installed SFML 3 or builds one, fetches ImGui and ImGui-SFML, and registers the tests |
+
+The engine's `.cpp` files live in `engine/src/`.
 
 ## Data sources
 
@@ -161,6 +167,8 @@ ctest --test-dir build -C Release --output-on-failure
 - Mass-radius relation for planets and brown dwarfs: Chen & Kipping (2017), ApJ 834, 17.
 
 ## Roadmap
+
+See [ROADMAP.md](ROADMAP.md) for the plan from simulator to engine. Highlights:
 
 - 3D, with inclinations and a 3D camera.
 - A higher-order integrator, such as IAS15, for systems with many close passes.

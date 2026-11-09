@@ -2,7 +2,7 @@
 #include <string>
 
 // Julian days and calendar dates (UTC)
-namespace calendar {
+namespace emma::calendar {
 
 double julianDayNow();                // from the system clock
 double startOfDay(double julianDay);  // 00:00 UTC on the same day

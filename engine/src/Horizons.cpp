@@ -1,4 +1,4 @@
-#include "Horizons.hpp"
+#include "emma/Horizons.hpp"
 #include "Http.hpp"
 #include <cstdio>
 #include <cstdlib>
@@ -7,7 +7,7 @@
 #include <system_error>
 #include <vector>
 
-namespace horizons {
+namespace emma::horizons {
 namespace {
 
 // Horizons IDs in SolarSnapshot order. Mars to Neptune are their system

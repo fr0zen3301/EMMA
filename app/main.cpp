@@ -1,10 +1,11 @@
-#include "Calendar.hpp"
 #include "Camera.hpp"
-#include "Constants.hpp"
-#include "Horizons.hpp"
 #include "Renderer.hpp"
-#include "Simulation.hpp"
 #include "Ui.hpp"
+#include "emma/Calendar.hpp"
+#include "emma/Clock.hpp"
+#include "emma/Constants.hpp"
+#include "emma/Horizons.hpp"
+#include "emma/Simulation.hpp"
 #include "imgui.h"
 #include "imgui-SFML.h"
 #include <SFML/Graphics.hpp>
@@ -18,11 +19,11 @@
 #include <string>
 #include <vector>
 
+using namespace emma;  // the app is built on the engine
+
 namespace {
 constexpr float SIDEBAR_WIDTH = 290.f;
 constexpr float STATUS_HEIGHT = 30.f;
-constexpr float MAX_FRAME_DT = 0.1f;        // longest real frame the physics catches up on
-constexpr float PHYSICS_BUDGET = 0.012f;    // seconds of stepping per frame before we fall behind
 constexpr float ENERGY_REFRESH = 0.25f;     // totalEnergy() is O(N^2): four times a second is plenty
 constexpr std::size_t DRIFT_HISTORY = 120;  // 30 seconds of samples
 constexpr double KMS_PER_PIXEL = 0.25;      // drag-launch scale: 4 px of drag per km/s
@@ -51,6 +52,7 @@ int main(int argc, char** argv) {
     Renderer renderer;
     Camera camera;
     UiState state;
+    emma::Clock clock;
 
     auto layout = [&](sf::Vector2u size) {
         const float w = static_cast<float>(size.x), h = static_cast<float>(size.y);
@@ -76,8 +78,9 @@ int main(int argc, char** argv) {
     auto loadPreset = [&](Preset preset) {
         sim.load(preset, preset == Preset::SolarSystem && solarStart ? &*solarStart : nullptr);
         camera.fit(sim.viewRadius());
-        state.timeScale = static_cast<float>(sim.suggestedTimeScale());
-        state.live = preset == Preset::SolarSystem;  // the solar system starts in real time
+        clock.reset();
+        clock.timeScale = sim.suggestedTimeScale();
+        clock.live = preset == Preset::SolarSystem;  // the solar system starts in real time
     };
     auto describeStart = [&]() -> std::string {
         if (!solarStart) return "Mean orbits for 1 January 2000.";
@@ -89,8 +92,8 @@ int main(int argc, char** argv) {
         fetch = std::async(std::launch::async, horizons::fetchSolarSystem, today, &fetchProgress, &fetchCancel);
         canRetry = false;
         changesAtFetch = sim.changeCount();
-        if (sim.preset() == Preset::SolarSystem && !state.paused) {
-            state.paused = true;  // hold the old positions still until today's arrive
+        if (sim.preset() == Preset::SolarSystem && !clock.paused) {
+            clock.paused = true;  // hold the old positions still until today's arrive
             pausedForFetch = true;
         }
     };
@@ -108,8 +111,7 @@ int main(int argc, char** argv) {
     float zoomVelocity = 0.f;
 
     // Timing and diagnostics
-    sf::Clock clock;
-    double accumulatorDays = 0.0;
+    sf::Clock frameClock;
     float behindTimer = 0.f;
     float energyTimer = ENERGY_REFRESH;  // refresh on the first frame
     unsigned long long baselineChange = ~0ull;
@@ -188,11 +190,8 @@ int main(int argc, char** argv) {
             } else if (const auto* key = event->getIf<sf::Event::KeyPressed>()) {
                 if (ImGui::GetIO().WantCaptureKeyboard) continue;
                 switch (key->code) {
-                case sf::Keyboard::Key::Space: state.paused = !state.paused; break;
-                case sf::Keyboard::Key::N:
-                    state.paused = true;
-                    state.stepRequested = true;
-                    break;
+                case sf::Keyboard::Key::Space: clock.paused = !clock.paused; break;
+                case sf::Keyboard::Key::N: clock.requestStep(); break;
                 case sf::Keyboard::Key::Escape:
                     pressing = false;
                     dragging = false;
@@ -203,7 +202,7 @@ int main(int argc, char** argv) {
             }
         }
 
-        const sf::Time elapsed = clock.restart();
+        const sf::Time elapsed = frameClock.restart();
         const float frameDt = elapsed.asSeconds();
         ImGui::SFML::Update(window, elapsed);
         mouse = sf::Vector2f(sf::Mouse::getPosition(window));
@@ -231,14 +230,14 @@ int main(int argc, char** argv) {
                     // Swap in today's positions, unless the scene changed while we waited
                     if (sim.preset() == Preset::SolarSystem && sim.changeCount() == changesAtFetch) {
                         sim.load(Preset::SolarSystem, &*solarStart);
-                        accumulatorDays = 0.0;
+                        clock.reset();
                     }
                     sourceNote = describeStart();
                 } else {
                     sourceNote = "Couldn't reach JPL Horizons: " + result.error + ". " + describeStart();
                     canRetry = true;
                 }
-                if (pausedForFetch && state.paused) state.paused = false;
+                if (pausedForFetch && clock.paused) clock.paused = false;
                 pausedForFetch = false;
             } else {
                 sourceNote = "Getting today's positions from JPL Horizons (" + std::to_string(fetchProgress.load()) +
@@ -258,18 +257,16 @@ int main(int argc, char** argv) {
         stats.behind = behindTimer > 0.f;
         stats.sourceNote = sourceNote;
         stats.canRetry = canRetry && !fetch.valid();
-        ui::drawSidebar(state, stats, sim.preset(), SIDEBAR_WIDTH, height - STATUS_HEIGHT);
-        ui::drawStatusBar(sim, camera, mouse, state, height - STATUS_HEIGHT, width, STATUS_HEIGHT);
+        ui::drawSidebar(state, clock, stats, sim.preset(), SIDEBAR_WIDTH, height - STATUS_HEIGHT);
+        ui::drawStatusBar(sim, camera, mouse, clock, height - STATUS_HEIGHT, width, STATUS_HEIGHT);
 
         if (state.presetRequested >= 0) {
             loadPreset(static_cast<Preset>(state.presetRequested));
             state.presetRequested = -1;
-            accumulatorDays = 0.0;
         }
         if (state.resetRequested) {
             loadPreset(sim.preset());
             state.resetRequested = false;
-            accumulatorDays = 0.0;
         }
         if (state.clearRequested) {
             sim.clear();
@@ -285,39 +282,8 @@ int main(int argc, char** argv) {
         }
 
         // ------------------------------------------------------------------ physics
-        // Fixed steps, as many as the chosen speed needs. The frame time is capped so a
-        // stall (dragging the window on Windows pauses the loop) can't snowball.
-        // At slow speeds, one step per frame, so bodies glide instead of jumping
-        if (state.stepRequested || !sim.hasCalendar()) state.live = false;  // stepping, or no dates to follow
-        if (state.live) {
-            // Real time: run until the simulation's clock reads the computer's clock. After a
-            // pause or a reload it catches up at the full step, over a few frames if need be
-            if (!state.paused) {
-                accumulatorDays = calendar::julianDayNow() - (sim.epoch() + sim.time());
-                sim.limitStep(std::max(accumulatorDays, 0.0));
-            }
-        } else {
-            sim.limitStep(static_cast<double>(state.timeScale) / 60.0);
-            if (!state.paused)
-                accumulatorDays += std::min(frameDt, MAX_FRAME_DT) * static_cast<double>(state.timeScale);
-            else if (state.stepRequested)
-                accumulatorDays += std::max(static_cast<double>(state.timeScale) / 60.0, sim.timeStep());
-        }
-        state.stepRequested = false;
-
-        sf::Clock physicsClock;
-        bool behind = false;
-        int steps = 0;
-        while (accumulatorDays >= sim.timeStep()) {
-            sim.step();
-            accumulatorDays -= sim.timeStep();
-            if (++steps % 32 == 0 && physicsClock.getElapsedTime().asSeconds() > PHYSICS_BUDGET) {
-                behind = !state.live;  // drop the backlog instead of freezing the window; real time picks it up next frame
-                accumulatorDays = 0.0;
-                break;
-            }
-        }
-        behindTimer = behind ? 1.f : std::max(0.f, behindTimer - frameDt);
+        const emma::Clock::Report ran = clock.run(sim, static_cast<double>(frameDt));
+        behindTimer = ran.behind ? 1.f : std::max(0.f, behindTimer - frameDt);
         sim.updateEffects(frameDt);
 
         // Conservation check, a few times per second

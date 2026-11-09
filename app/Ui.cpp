@@ -1,7 +1,7 @@
 #include "Ui.hpp"
-#include "Calendar.hpp"
-#include "Constants.hpp"
 #include "Renderer.hpp"
+#include "emma/Calendar.hpp"
+#include "emma/Constants.hpp"
 #include "imgui.h"
 #include "imgui-SFML.h"
 #include <algorithm>
@@ -9,6 +9,8 @@
 #include <cstdio>
 #include <iostream>
 #include <system_error>
+
+using namespace emma;  // the app is built on the engine
 
 namespace {
 
@@ -134,7 +136,7 @@ void loadFont(const std::filesystem::path& exeDir) {
     std::cerr << "EMMA: fonts/font.otf not found, using ImGui's built-in font\n";
 }
 
-void drawSidebar(UiState& st, const Stats& stats, Preset preset, float width, float height) {
+void drawSidebar(UiState& st, emma::Clock& clock, const Stats& stats, Preset preset, float width, float height) {
     ImGui::SetNextWindowPos(ImVec2(0.f, 0.f));
     ImGui::SetNextWindowSize(ImVec2(width, height));
     const ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
@@ -147,23 +149,22 @@ void drawSidebar(UiState& st, const Stats& stats, Preset preset, float width, fl
     ImGui::AlignTextToFramePadding();
     ImGui::TextColored(ACCENT, "EMMA");
     ImGui::SameLine(width - style.WindowPadding.x - 116.f);
-    if (ImGui::Button(st.paused ? "Run###run" : "Pause###run", ImVec2(62.f, 0.f))) st.paused = !st.paused;
+    if (ImGui::Button(clock.paused ? "Run###run" : "Pause###run", ImVec2(62.f, 0.f))) clock.paused = !clock.paused;
     ImGui::SameLine();
-    if (ImGui::Button("Step", ImVec2(46.f, 0.f))) {
-        st.paused = true;
-        st.stepRequested = true;  // also leaves real time
-    }
+    if (ImGui::Button("Step", ImVec2(46.f, 0.f))) clock.requestStep();
     ImGui::Spacing();
 
     if (ImGui::CollapsingHeader("Simulation", ImGuiTreeNodeFlags_DefaultOpen)) {
         rowLabel("Time");
         ImGui::SetNextItemWidth(-1.f);
-        const std::string rate = st.live ? std::string("Real time") : formatRate(st.timeScale);
-        if (ImGui::SliderFloat("##timescale", &st.timeScale, 0.1f, 3650.f, rate.c_str(),
-                               ImGuiSliderFlags_Logarithmic))
-            st.live = false;  // picking a speed leaves real time
+        const std::string rate = clock.live ? std::string("Real time") : formatRate(clock.timeScale);
+        float scale = static_cast<float>(clock.timeScale);
+        if (ImGui::SliderFloat("##timescale", &scale, 0.1f, 3650.f, rate.c_str(), ImGuiSliderFlags_Logarithmic)) {
+            clock.timeScale = static_cast<double>(scale);
+            clock.live = false;  // picking a speed leaves real time
+        }
         if (preset == Preset::SolarSystem) {
-            if (ImGui::Checkbox("Real time", &st.live) && st.live) st.paused = false;
+            if (ImGui::Checkbox("Real time", &clock.live) && clock.live) clock.paused = false;
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("One second per second, in step with your clock: the planets where they are right now");
         }
@@ -261,7 +262,7 @@ void drawSidebar(UiState& st, const Stats& stats, Preset preset, float width, fl
     ImGui::End();
 }
 
-void drawStatusBar(const Simulation& sim, const Camera& camera, sf::Vector2f mouse, const UiState& st,
+void drawStatusBar(const Simulation& sim, const Camera& camera, sf::Vector2f mouse, const emma::Clock& clock,
                    float y, float width, float height) {
     ImGui::SetNextWindowPos(ImVec2(0.f, y));
     ImGui::SetNextWindowSize(ImVec2(width, height));
@@ -279,7 +280,7 @@ void drawStatusBar(const Simulation& sim, const Camera& camera, sf::Vector2f mou
         ImGui::TextDisabled("Cursor %.4f, %.4f AU", w.x, w.y);
     }
     ImGui::SameLine(0.f, 28.f);
-    if (sim.hasCalendar() && st.live)
+    if (sim.hasCalendar() && clock.live)
         ImGui::TextDisabled("Date %s", calendar::localDateTime(sim.epoch() + sim.time()).c_str());
     else if (sim.hasCalendar())
         ImGui::TextDisabled("Date %s", calendar::date(sim.epoch() + sim.time()).c_str());
@@ -292,9 +293,9 @@ void drawStatusBar(const Simulation& sim, const Camera& camera, sf::Vector2f mou
     else
         ImGui::TextDisabled("Step %s", formatDuration(sim.timeStep()).c_str());
 
-    const char* status = st.paused ? "Paused" : "Running";
+    const char* status = clock.paused ? "Paused" : "Running";
     ImGui::SameLine(width - 12.f - ImGui::CalcTextSize(status).x);
-    ImGui::TextColored(st.paused ? WARN : ACCENT, "%s", status);
+    ImGui::TextColored(clock.paused ? WARN : ACCENT, "%s", status);
     ImGui::End();
 }
 

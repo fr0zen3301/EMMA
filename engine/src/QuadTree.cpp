@@ -1,8 +1,10 @@
-#include "QuadTree.hpp"
-#include "Body.hpp"
-#include "Constants.hpp"
+#include "emma/QuadTree.hpp"
+#include "emma/Body.hpp"
+#include "emma/Constants.hpp"
 #include <algorithm>
 #include <cmath>
+
+namespace emma {
 
 namespace {
 // Bodies closer than root size / 2^48 are folded into one point mass.
@@ -133,3 +135,5 @@ Vector2D QuadTree::acceleration(std::size_t self, double theta, double softening
     }
     return acc;
 }
+
+} // namespace emma
