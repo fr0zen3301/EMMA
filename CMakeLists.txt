@@ -50,6 +50,11 @@ FetchContent_MakeAvailable(imgui-sfml)
 # as "emma/Simulation.hpp" and so on, anything in engine/src stays private
 add_library(emma_core STATIC
     engine/src/Simulation.cpp
+    engine/src/World.cpp
+    engine/src/Gravity.cpp
+    engine/src/Integrator.cpp
+    engine/src/Collisions.cpp
+    engine/src/Presets.cpp
     engine/src/Clock.cpp
     engine/src/Body.cpp
     engine/src/QuadTree.cpp

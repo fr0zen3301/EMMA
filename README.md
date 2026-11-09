@@ -1,15 +1,15 @@
 # EMMA
 
-EMMA (Engine for Multi-body Mechanics and Astrophysics) is a real-time gravity simulator in C++. It integrates Newton's law of gravitation for every body in the system, draws the result with [SFML 3](https://www.sfml-dev.org/learn/), and puts the controls in a [Dear ImGui](https://github.com/ocornut/imgui) sidebar.
+EMMA (Engine for Multi-body Mechanics and Astrophysics) is a real-time gravity simulator written in C++. Every body pulls on every other body through Newton's law of gravity, and EMMA works out where they all go, frame by frame. It draws the result with [SFML 3](https://www.sfml-dev.org/learn/) and puts the controls in a [Dear ImGui](https://github.com/ocornut/imgui) sidebar.
 
-It runs in real units. Distances are in astronomical units, masses in solar masses and time in days, and the solar system starts from where the planets are today, downloaded from NASA JPL's Horizons service. Earth takes a year to go around the Sun and the Moon takes 27.3 days to go around Earth. A drift readout shows how far the integrator has wandered from exact conservation of energy and angular momentum.
+Everything runs in real units: distances in astronomical units (AU), masses in solar masses and time in days. The solar system starts from the planets' real positions today, downloaded from NASA JPL's Horizons service, so Earth takes a year to go around the Sun and the Moon takes 27.3 days to go around Earth. A drift readout shows how well the simulation is holding up. In a perfect simulation, total energy and angular momentum never change, and the readout shows how far they have moved.
 
 ## What you can do
 
-- Watch the Sun, the eight planets and the Moon move on from where they are today, or switch to Alpha Centauri A and B, a real pair of stars on an 80-year orbit.
-- Add a body anywhere. A click places it; pressing and dragging sets its speed and direction, and a dashed line shows where it will go before you let go.
+- Watch the Sun, the eight planets and the Moon carry on from where they are today, or switch to Alpha Centauri A and B, a real pair of stars on an 80-year orbit.
+- Add a body anywhere. A click places it. Pressing and dragging sets its speed and direction, and a dashed line shows where it will go before you let go.
 - Tick "Circular orbit" and a click puts the new body on a circular orbit around whatever dominates gravity at that spot. That is the Sun almost everywhere, and Earth when you click close to Earth.
-- Run in real time, one second per second in step with your clock, or anywhere from a few hours per second up to ten years per second. Pause, or step one frame at a time.
+- Run in real time (one second per second, in step with your computer's clock) or at any speed from a few hours per second up to ten years per second. You can also pause, or step one frame at a time.
 - Zoom from Neptune's orbit down to the Earth and Moon, and hover over any body to see its mass, radius, distance and speed.
 
 ## Controls
@@ -29,46 +29,60 @@ Speeds are measured relative to the body that dominates gravity where you click,
 
 ## The interface
 
-The sidebar on the left has five sections. Simulation sets how fast time runs (the solar system starts in real time) and holds Clear, Reset and Fit view. System switches between the solar system, Alpha Centauri and empty space, and says where the solar system's starting positions came from. New body sets the mass, speed and direction of the next body; a swatch shows the color and class it will get, from a rocky body up to an O-type star. View turns trails and labels on and off. Stats shows the body count, the frame rate, and the relative drift in total energy and angular momentum, with a graph of the last 30 seconds.
+The sidebar on the left has five sections:
 
-The status bar along the bottom shows how wide the view is, the cursor position in AU, the date (or the elapsed time outside the solar system) and the size of the time step, with the number of pieces it was split into during a close pass.
+- Simulation sets how fast time runs and has a Real time box. The solar system starts in real time. This section also holds the Clear, Reset and Fit view buttons.
+- System switches between the solar system, Alpha Centauri and empty space, and says where the solar system's starting positions came from.
+- New body sets the mass, speed and direction of the next body you add. A swatch shows the color and class it will get, anywhere from a rocky body up to an O-type star.
+- View turns trails and labels on and off.
+- Stats shows the body count, the frame rate, and how far total energy and angular momentum have drifted, with a graph of the last 30 seconds.
+
+The status bar along the bottom shows how wide the view is, the cursor position in AU, the date and the size of the time step. In real time the date includes your local time of day; outside the solar system it shows the time elapsed instead. During a close pass the status bar also shows how many pieces the step was split into.
 
 ## The physics
 
 ### Units
 
-EMMA uses the units of solar system dynamics. In AU, solar masses and days, the gravitational constant is k², where k = 0.01720209895 is the Gaussian gravitational constant, so G = 2.959 × 10⁻⁴ AU³ M☉⁻¹ day⁻². The interface converts to km/s and Earth, Jupiter or solar masses for display.
+EMMA uses the units astronomers use for the solar system. One astronomical unit (AU) is 149,597,870.7 km, roughly the average distance between Earth and the Sun. Masses are in solar masses (M☉), so the Sun's mass is 1, and time is in days. In these units the numbers stay close to 1: Earth orbits at about 1 AU and Neptune at about 30, instead of hundreds of millions of kilometers.
+
+The gravitational constant then becomes G = k², where k = 0.01720209895 is the Gaussian gravitational constant. That gives G = 2.959 × 10⁻⁴ AU³ M☉⁻¹ day⁻². The interface converts to km/s and to Earth, Jupiter or solar masses for display.
 
 ### Starting positions
 
-When EMMA starts, it asks JPL Horizons for the position and velocity of the Sun, each planet and the Moon at 00:00 UTC today, relative to the solar system's barycenter and in the ecliptic plane. Horizons computes them from JPL's DE441 planetary ephemeris. For Mars and the outer planets EMMA asks for the barycenter of the planet's whole system, which matches the system masses it uses. The ten requests take a few seconds, and the solar system waits, paused, until they finish. The result is saved in the system's temporary folder, so a second start on the same day needs no network.
+When EMMA starts, it asks JPL Horizons for the position and velocity of the Sun, each planet and the Moon at 00:00 UTC today. The numbers are measured from the solar system's barycenter, which is the center of mass of the whole system, and lie in the ecliptic plane, the plane of Earth's orbit. Horizons computes them from DE441, JPL's planetary ephemeris: a model that gives the position of each planet and moon at any moment. For Mars and the outer planets, EMMA asks for the barycenter of the planet together with its moons, which matches the masses it uses for them: each one includes the planet's moons.
 
-Without a connection, EMMA starts from the last positions it saved, or from mean orbital elements for 1 January 2000 if it has never downloaded any. The sidebar shows which one it used and offers to try the download again.
+The ten requests take a few seconds, and the solar system waits, paused, until they finish. EMMA saves the result in the system's temporary folder, so a second start on the same day needs no network.
+
+Without a connection, EMMA starts from the last positions it saved. If it has never downloaded any, it starts from average orbits for 1 January 2000 (mean orbital elements). The sidebar says which one it used and offers to try the download again.
 
 ### Integration
 
-Each step uses velocity Verlet:
+To move time forward, EMMA uses a method called velocity Verlet. Each step does four things:
 
-1. Drift: move every body by v·dt + ½·a·dt².
-2. Recompute the accelerations at the new positions.
-3. Kick: update every velocity with the average of the old and new accelerations.
+1. Drift: move every body by v·dt + ½·a·dt², using its velocity v and acceleration a.
+2. Work out the accelerations again at the new positions.
+3. Kick: update every velocity using the average of the old and new accelerations.
 4. Merge any bodies that touched during the step, then record trail points. A body gets a new trail point each time its direction of travel has turned by 2°, so tight loops and wide orbits both draw as smooth curves.
 
-Verlet is symplectic, so the energy error oscillates around a fixed value and doesn't build up the way it does with Euler steps, which make planets slowly spiral away. A body's acceleration is computed before its first step, so new bodies start with second-order accuracy too.
+Verlet is symplectic. In practice that means its energy error rises and falls around a fixed value and never builds up. With simpler methods such as Euler steps, the error builds up and planets slowly spiral away. EMMA works out a new body's acceleration before its first step, so new bodies get Verlet's full (second-order) accuracy from their very first step.
 
-The base step is 0.1 day for the solar system (about 880 steps per orbit of Mercury) and 1 day for Alpha Centauri. When time runs slowly, the step shrinks to one frame's worth of time, 10 minutes at 10 hours per second, so bodies glide instead of jumping. Before each piece of a step, EMMA works out two times for every pair of bodies: its dynamical time, √(r³ / G(m₁ + m₂)), and the time the pair needs to close the gap at its current speed. A piece can last at most 3% of the shortest of these. Away from close passes that allows the whole base step in one piece, so Verlet keeps its long-run energy behavior. During a close pass the step splits into as many as 4,096 pieces, and the status bar shows the count. A single long step through a near miss would jump past the closest point and send the pair apart faster than it arrived, which looks like the bodies repelling each other. Above 64 bodies, checking every pair would cost more than the forces themselves, so EMMA sizes the pieces from how fast each body's acceleration changed over the previous piece. The predicted path uses the same rule.
+The base step is 0.1 day for the solar system (about 880 steps per orbit of Mercury) and 1 day for Alpha Centauri. When time runs slowly, the step shrinks to one frame's worth of time, 10 minutes at 10 hours per second, so bodies glide instead of jumping. In real time it shrinks to a fraction of a second.
+
+Close passes need smaller steps. A single long step through a near miss would jump past the closest point and send the pair apart faster than it arrived, which looks like the bodies pushing each other away. So before each piece of a step, EMMA works out two times for every pair of bodies. One is the pair's dynamical time, √(r³ / G(m₁ + m₂)), which sets how quickly the two can swing around each other. The other is the time the pair needs to close the gap at its current speed. A piece can last at most 3% of the shortest of these times.
+
+Away from close passes, that rule allows the whole base step in one piece, so Verlet keeps its long-run energy behavior. During a close pass the step splits into as many as 4,096 pieces, and the status bar shows the count. Above 64 bodies, checking every pair would cost more than the forces themselves, so EMMA instead sizes the pieces from how fast each body's acceleration changed over the previous piece. The dashed predicted path uses the same rule.
 
 Each frame runs as many base steps as the chosen speed needs. If that would take too long, EMMA drops the backlog and shows "Running behind" instead of freezing the window.
 
 ### Forces
 
-Up to 64 bodies, EMMA sums every pair directly, once per pair. That is exact and faster than building a tree at this size. Above 64 it switches to a Barnes-Hut quadtree with an opening angle of 0.5, which treats a distant group of bodies as a single point mass and brings the cost down to O(N log N). The tree is stored in one flat array that gets reused every step.
+Up to 64 bodies, EMMA adds up the pull between every pair directly, once per pair. That is exact, and at this size it is faster than building a tree. Above 64 bodies it switches to a Barnes-Hut quadtree, which treats a distant group of bodies as a single point mass at the group's center of mass. With an opening angle of 0.5, a group counts as distant when it is less than half as wide as its distance from the body being pulled. That brings the cost down from N² to about N log N. The tree is stored in one flat array that gets reused every step.
 
-Gravity uses Plummer softening with a length of 10⁻⁷ AU, about 15 km. That is smaller than any body's radius, so in practice the force is plain Newtonian gravity and the softening only keeps the division finite. The energy readout uses the potential whose gradient is exactly this force.
+Gravity is softened very slightly (Plummer softening, with a length of 10⁻⁷ AU, about 15 km). That is smaller than any body's radius, so in practice the force is plain Newtonian gravity, and the softening only keeps the force from dividing by zero when two bodies sit at the same point. The energy readout uses the potential energy that goes with exactly this softened force.
 
 ### Collisions
 
-Bodies merge when their physical radii touch. The check follows each pair along the path both moved during the step, so a fast body can't jump through another between two steps. A sweep along the x axis limits the exact check to pairs that could have met. A merge conserves mass and momentum, places the result at the pair's center of mass, and shows a short ring. The heavier body keeps its name and color.
+Bodies merge when their surfaces touch. The check follows each pair along the path both moved during the step, so a fast body can't jump through another between two steps. To keep this quick, EMMA first sorts the bodies along the x axis and only runs the exact check on pairs whose paths overlap there. A merge keeps the total mass and momentum, places the new body at the pair's center of mass, and shows a short ring. The heavier body keeps its name and color.
 
 ### Sizes and colors
 
@@ -82,21 +96,21 @@ Bodies from the presets use their measured radius and color. A body you add gets
 | up to 0.08 solar masses | brown dwarf | about one Jupiter radius | blackbody, 800 to 2,300 K |
 | 0.08 solar masses and up | main-sequence star | R ∝ M^0.8, or M^0.57 above 1 M☉ | blackbody at its surface temperature |
 
-The planet and brown dwarf radii follow Chen & Kipping (2017). A star's surface temperature comes from the main-sequence mass-luminosity relation and the Stefan-Boltzmann law. A 0.1 M☉ red dwarf comes out near 2,700 K and orange-red, the Sun at 5,772 K and nearly white, and a 10 M☉ star near 24,000 K and blue. The sidebar and tooltips name the spectral type.
+The planet and brown dwarf radii follow Chen & Kipping (2017). A star's surface temperature comes from the main-sequence mass-luminosity relation and the Stefan-Boltzmann law, and its color is that of a blackbody (an ideal glowing object) at that temperature. A 0.1 M☉ red dwarf comes out near 2,700 K and orange-red, the Sun at 5,772 K and nearly white, and a 10 M☉ star near 24,000 K and blue. The sidebar and tooltips name the spectral type.
 
-At solar-system scale a planet is much smaller than a pixel, so every body is drawn at least as large as a marker that grows with the logarithm of its mass. Zoom in far enough and the true size takes over. The background stars stay fixed while you pan, as real stars would at this distance.
+At solar-system scale a planet is much smaller than a pixel, so every body is drawn at least as large as a marker that grows with the logarithm of its mass. Zoom in far enough and the true size takes over. The background stars stay fixed while you pan, as real stars would at their distance.
 
 ## Accuracy and limits
 
-- The simulation is 2D. Orbits sit in the ecliptic plane and their inclinations are dropped; the largest, Mercury's, is 7°.
-- Gravity is Newtonian. General relativity adds 43 arcseconds per century to Mercury's perihelion precession, and EMMA leaves that out.
-- Today's positions from Horizons are projected onto the ecliptic plane, which drops each planet's small distance above or below it. Offline, the planets start from mean Keplerian elements, good to a fraction of a degree around the year 2000.
-- Split steps aren't symplectic, so each close pass leaves a small permanent offset in the energy drift. The planets and the Moon run unsplit.
-- Merges are perfectly inelastic, so they lower the total energy. The drift readout starts a new baseline whenever bodies are added, merged or loaded.
+- The simulation is 2D. Orbits lie flat in the ecliptic plane and their tilts (inclinations) are dropped. The largest, Mercury's, is 7°.
+- Gravity is Newtonian. General relativity makes Mercury's orbit turn an extra 43 arcseconds per century (its perihelion precession), and EMMA leaves that out.
+- Today's positions from Horizons are flattened onto the ecliptic plane, which drops each planet's small distance above or below it. Offline, the planets start from mean Keplerian elements, good to a fraction of a degree around the year 2000.
+- A split step isn't symplectic, so each close pass leaves a small permanent offset in the energy drift. The planets and the Moon never need split steps.
+- Merges are perfectly inelastic (the two bodies stick together), so they lower the total energy. The drift readout starts from a new baseline whenever bodies are added, merged or loaded.
 
 ## Building
 
-EMMA needs a C++17 compiler, CMake 3.28 or newer, and Git. If SFML 3 is installed, CMake uses it. If not, CMake downloads SFML and builds it along with Dear ImGui and ImGui-SFML, so the first configure needs an internet connection and takes a few minutes. The build copies `fonts` next to the executable, so EMMA starts from any folder. Use a Release build to run it: a Debug build steps the physics many times slower.
+EMMA needs a C++17 compiler, CMake 3.28 or newer, and Git. If SFML 3 is installed, CMake uses it. If not, CMake downloads SFML and builds it along with Dear ImGui and ImGui-SFML, so the first configure needs an internet connection and takes a few minutes. The build copies `fonts` next to the executable, so EMMA starts from any folder. Run a Release build: a Debug build runs the physics many times slower.
 
 ### macOS
 
@@ -125,7 +139,19 @@ Release builds on Windows open without a console window. If the font is missing,
 
 ### Tests
 
-The physics tests build along with EMMA and don't need SFML. They check that Earth's orbit takes one sidereal year, that energy and angular momentum stay conserved over ten simulated years, that a close pass doesn't speed bodies up, and that a head-on collision keeps mass and momentum. They also compare the Barnes-Hut tree with an exact sum, check that each star of Alpha Centauri rules the space around it and that trails stay smooth, and test the calendar and the Horizons parser. Run them from the project folder:
+The tests build along with EMMA and don't need SFML. They check that:
+
+- Earth's orbit takes one sidereal year
+- energy and angular momentum stay conserved over ten simulated years
+- a close pass doesn't speed bodies up
+- a head-on collision keeps mass and momentum
+- the Barnes-Hut tree matches an exact sum
+- each star of Alpha Centauri rules the space around it
+- trails stay smooth
+- the calendar and the Horizons parser read dates and replies correctly
+- the clock keeps the chosen speed, pauses and steps, and lands on the right moment in real time
+
+Run them from the project folder:
 
 ```
 ctest --test-dir build -C Release --output-on-failure
@@ -133,12 +159,18 @@ ctest --test-dir build -C Release --output-on-failure
 
 ## Project structure
 
-EMMA is split into an engine and an app. The engine (`engine/`, built as the `emma_core` library) has no graphics: the physics, time, the Horizons download and the calendar, all in `namespace emma`. The app (`app/`) is the window, drawing and sidebar, built on the engine with SFML and Dear ImGui.
+EMMA has two parts. The engine, in `engine/`, is built as the `emma_core` library and has no graphics: it holds the physics, time, the Horizons download and the calendar, all in `namespace emma`. Its public headers are in `engine/include/emma/`, included as `"emma/Simulation.hpp"` and so on, and its source files are in `engine/src/`. The app, in `app/`, is the window, the drawing and the sidebar, built on the engine with SFML and Dear ImGui.
+
+### Engine
 
 | File | Role |
 |------|------|
-| `engine/include/emma/` | The engine's public headers, included as `"emma/Simulation.hpp"` and so on |
-| `Simulation.hpp` / `Simulation.cpp` | The bodies and the physics: Verlet steps, forces, collisions, trails, presets, path prediction, energy |
+| `Simulation.hpp` / `Simulation.cpp` | Ties the parts below together for the app: loading, stepping, adding bodies, and queries like the dominant body, circular velocity and the predicted path |
+| `World.hpp` / `World.cpp` | The bodies and where the system is in time, plus trails, kinetic energy and angular momentum |
+| `Gravity.hpp` / `Gravity.cpp` | The force: exact pairwise sum or Barnes-Hut, and the potential energy that matches it |
+| `Integrator.hpp` / `Integrator.cpp` | Velocity Verlet, split into pieces through close passes |
+| `Collisions.hpp` / `Collisions.cpp` | Swept contact checks and merges |
+| `Presets.hpp` / `Presets.cpp` | The solar system and Alpha Centauri, each built as a scenario: bodies plus settings |
 | `Clock.hpp` / `Clock.cpp` | Time: speed, pause, single steps, real time, and how many fixed steps each frame runs |
 | `Body.hpp` / `Body.cpp` | A single body, plus the mass-radius, temperature and color relations |
 | `QuadTree.hpp` / `QuadTree.cpp` | Barnes-Hut tree for systems above 64 bodies |
@@ -147,14 +179,22 @@ EMMA is split into an engine and an app. The engine (`engine/`, built as the `em
 | `Constants.hpp` | Units and physical constants |
 | `Vector2D.hpp` | Header-only 2D vector |
 | `engine/src/Http.hpp` / `Http.cpp` | HTTPS requests, with WinHTTP on Windows and the system curl elsewhere. Private to the engine |
+
+### App
+
+| File | Role |
+|------|------|
 | `app/main.cpp` | Window, event loop, input (click, drag-launch, pan, zoom), the drift readout and the background Horizons download |
 | `app/Camera.hpp` | Converts between AU and pixels, with zoom and pan |
 | `app/Renderer.hpp` / `Renderer.cpp` | Starfield, trails, bodies, merge rings, predicted path and launch arrow |
 | `app/Ui.hpp` / `Ui.cpp` | Sidebar, status bar, labels, tooltips and the color theme |
+
+### Build and tests
+
+| File | Role |
+|------|------|
 | `tests/physics_tests.cpp` | Engine tests, run through CTest |
 | `CMakeLists.txt` | Build recipe: uses an installed SFML 3 or builds one, fetches ImGui and ImGui-SFML, and registers the tests |
-
-The engine's `.cpp` files live in `engine/src/`.
 
 ## Data sources
 
@@ -168,7 +208,7 @@ The engine's `.cpp` files live in `engine/src/`.
 
 ## Roadmap
 
-See [ROADMAP.md](ROADMAP.md) for the plan from simulator to engine. Highlights:
+[ROADMAP.md](ROADMAP.md) has the plan for turning EMMA from a simulator into an engine. Some of what's planned:
 
 - 3D, with inclinations and a 3D camera.
 - A higher-order integrator, such as IAS15, for systems with many close passes.

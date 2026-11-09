@@ -5,7 +5,7 @@
 #include <numeric>
 #include <random>
 
-using namespace emma;  // the app is built on the engine
+using namespace emma;
 
 namespace {
 

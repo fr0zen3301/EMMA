@@ -17,8 +17,8 @@ Clock::Report Clock::run(Simulation& sim, double realSeconds) {
 Clock::Report Clock::run(Simulation& sim, double realSeconds, double nowJulianDay) {
     if (stepRequested || !sim.hasCalendar()) live = false;  // stepping, or no dates to follow
     if (live) {
-        // Run until the simulation's clock reads nowJulianDay. After a pause or a load
-        // it catches up at the full step, over a few frames if need be
+        // run until the simulation's clock reads nowJulianDay
+        // after a pause or a load it catches up at the full step
         if (!paused) {
             owed = nowJulianDay - (sim.epoch() + sim.time());
             sim.limitStep(std::max(owed, 0.0));

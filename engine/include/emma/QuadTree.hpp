@@ -8,7 +8,7 @@ namespace emma {
 class Body;
 
 // Barnes-Hut quadtree. Nodes live in one flat array that is rebuilt every step,
-// so once the array has grown, building the tree no longer touches the heap.
+// so once the array has grown, building the tree does not touch the heap
 class QuadTree {
 public:
     void build(const std::vector<Body>& bodies);

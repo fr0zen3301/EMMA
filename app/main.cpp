@@ -19,7 +19,7 @@
 #include <string>
 #include <vector>
 
-using namespace emma;  // the app is built on the engine
+using namespace emma;
 
 namespace {
 constexpr float SIDEBAR_WIDTH = 290.f;
@@ -33,8 +33,8 @@ const sf::Color ARROW_COLOR(217, 207, 255);
 } // namespace
 
 int main(int argc, char** argv) {
-    // 8x multisampling smooths the edges of planets and trails; SFML falls back to
-    // the closest level the graphics card supports
+    // 8x multisampling smooths the edges of planets and trails
+    // SFML falls back to the closest level the graphics card supports
     sf::ContextSettings settings;
     settings.antiAliasingLevel = 8;
     sf::RenderWindow window(sf::VideoMode({1440u, 900u}), "EMMA (Engine for Multi-body Mechanics and Astrophysics)",
@@ -60,8 +60,8 @@ int main(int argc, char** argv) {
         camera.viewport = sf::FloatRect({SIDEBAR_WIDTH, 0.f},
                                         {std::max(1.f, w - SIDEBAR_WIDTH), std::max(1.f, h - STATUS_HEIGHT)});
     };
-    // Where the solar system starts: today's positions from JPL Horizons when we
-    // have them, otherwise the last ones saved, otherwise the J2000 orbital elements
+    // today's positions from JPL Horizons the app has it
+    // otherwise the last ones saved, otherwise the J2000 orbital elements
     const double today = calendar::startOfDay(calendar::julianDayNow());
     const std::filesystem::path cachePath = horizons::defaultCachePath();
     std::optional<SolarSnapshot> solarStart = horizons::loadCache(cachePath);
@@ -128,7 +128,7 @@ int main(int argc, char** argv) {
         angle = std::atan2(-static_cast<double>(d.y), static_cast<double>(d.x));  // screen y is down
     };
     // Launch velocity in the inertial frame. Speed and direction are relative to the
-    // body that dominates gravity at the spawn point, so a launch near Earth moves with Earth.
+    // body that dominates gravity at the spawn point, so a launch near Earth moves with Earth
     auto launchVelocity = [&](const Vector2D& at, double speedKms, double angle) -> Vector2D {
         if (state.autoOrbit) return sim.circularVelocity(at);
         const int host = sim.dominantBody(at);
@@ -292,7 +292,7 @@ int main(int argc, char** argv) {
             energyTimer = 0.f;
             const double energy = sim.totalEnergy();
             const double momentum = sim.angularMomentum();
-            if (sim.changeCount() != baselineChange) {  // bodies added, merged or loaded: new baseline
+            if (sim.changeCount() != baselineChange) {  // bodies added, merged or loaded
                 baselineChange = sim.changeCount();
                 baseEnergy = energy;
                 baseMomentum = momentum;
@@ -326,7 +326,7 @@ int main(int argc, char** argv) {
             renderer.drawGhost(window, anchor,
                                Renderer::screenRadius(mass, Body::radiusForMass(mass), camera.pxPerAU), color);
 
-            // Arrow for the velocity relative to the dominant body, at the drag scale
+            // Arrow for the velocity relative to the dominant body
             const int host = sim.dominantBody(at);
             const Vector2D relative =
                 velocity - (host >= 0 ? sim.getBodies()[static_cast<std::size_t>(host)].velocity : Vector2D());

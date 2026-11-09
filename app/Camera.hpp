@@ -6,7 +6,7 @@
 
 // Maps world coordinates (AU, y pointing up like a star chart) to window pixels
 // (y pointing down). Kept in double precision so you can zoom from Neptune's
-// orbit down to the Moon without the picture shaking.
+// orbit down to the Moon without the picture shaking
 struct Camera {
     static constexpr double MIN_PX_PER_AU = 0.05;
     static constexpr double MAX_PX_PER_AU = 1e9;

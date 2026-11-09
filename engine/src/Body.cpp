@@ -9,8 +9,8 @@ namespace emma {
 namespace {
 
 // Class boundaries in solar masses
-constexpr double TERRAN_LIMIT = 2.04 * units::EARTH_MASS;        // Chen & Kipping (2017)
-constexpr double NEPTUNIAN_LIMIT = 0.414 * units::JUPITER_MASS;  // Chen & Kipping (2017)
+constexpr double TERRAN_LIMIT = 2.04 * units::EARTH_MASS;
+constexpr double NEPTUNIAN_LIMIT = 0.414 * units::JUPITER_MASS;
 constexpr double DEUTERIUM_LIMIT = 13.0 * units::JUPITER_MASS;   // planet / brown dwarf
 constexpr double HYDROGEN_LIMIT = 0.08;                          // brown dwarf / star
 

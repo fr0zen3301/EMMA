@@ -22,10 +22,10 @@ public:
     Body(std::string name, std::string kind, double mass, double radius, Rgb color,
          const Vector2D& position, const Vector2D& velocity);
 
-    double mass;                // solar masses
-    double radius;              // AU, physical radius (used for collisions)
-    Vector2D position;          // AU
-    Vector2D velocity;          // AU per day
+    double mass;
+    double radius;
+    Vector2D position;
+    Vector2D velocity;
     Vector2D acceleration;      // AU per day^2
     Vector2D previousPosition;  // where the body started the current step
     Rgb color;
@@ -34,8 +34,8 @@ public:
     bool alive = true;
 
     std::deque<Vector2D> trail;
-    Vector2D trailHeading;  // direction of travel when the last trail point was recorded
-
+    Vector2D trailHeading;
+    
     bool isNamed() const { return !name.empty(); }
     std::string description() const { return kind.empty() ? describe(mass) : kind; }
 

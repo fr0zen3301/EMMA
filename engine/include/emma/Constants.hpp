@@ -2,7 +2,7 @@
 
 // EMMA works in the units of solar system dynamics: lengths in astronomical
 // units (AU), masses in solar masses (Msun), time in days. In these units G is
-// the square of the Gaussian gravitational constant k.
+// the square of the Gaussian gravitational constant k
 namespace emma::units {
 
 constexpr double PI = 3.14159265358979323846;

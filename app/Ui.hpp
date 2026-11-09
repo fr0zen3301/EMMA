@@ -8,8 +8,7 @@
 #include <string>
 #include <vector>
 
-// Everything the sidebar can change, apart from time (that's emma::Clock). main.cpp
-// reads the *Requested flags each frame and clears them once handled
+// Everything the sidebar can change, apart from time (emma::Clock)
 struct UiState {
     float massExponent = -5.52f;  // log10(mass / Msun); -5.52 is one Earth mass
     float speedKms = 0.f;         // launch speed, relative to the dominant body
@@ -34,7 +33,7 @@ struct Stats {
     const std::vector<float>* driftHistory = nullptr;
     bool behind = false;         // the physics couldn't keep up with the chosen speed
     std::string sourceNote;      // where the solar system's starting positions came from
-    bool canRetry = false;       // the Horizons download failed and can be tried again
+    bool canRetry = false;       // the Horizons download failed, try again
 };
 
 namespace ui {

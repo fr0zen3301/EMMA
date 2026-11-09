@@ -21,7 +21,7 @@ public:
     void drawGhost(sf::RenderTarget& target, sf::Vector2f at, float radius, emma::Rgb color) const;
     void drawArrow(sf::RenderTarget& target, sf::Vector2f from, sf::Vector2f to, sf::Color color) const;
 
-    // On-screen radius in pixels: the true size once you zoom in far enough,
+    // the true size once you zoom in far enough
     // otherwise a marker that grows with the logarithm of the mass
     static float screenRadius(double mass, double radiusAU, double pxPerAU);
 

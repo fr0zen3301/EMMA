@@ -10,7 +10,7 @@
 #include <iostream>
 #include <system_error>
 
-using namespace emma;  // the app is built on the engine
+using namespace emma;
 
 namespace {
 
