@@ -32,7 +32,12 @@ const sf::Color ARROW_COLOR(217, 207, 255);
 } // namespace
 
 int main(int argc, char** argv) {
-    sf::RenderWindow window(sf::VideoMode({1440u, 900u}), "EMMA (Engine for Multi-body Mechanics and Astrophysics)");
+    // 8x multisampling smooths the edges of planets and trails; SFML falls back to
+    // the closest level the graphics card supports
+    sf::ContextSettings settings;
+    settings.antiAliasingLevel = 8;
+    sf::RenderWindow window(sf::VideoMode({1440u, 900u}), "EMMA (Engine for Multi-body Mechanics and Astrophysics)",
+                            sf::Style::Default, sf::State::Windowed, settings);
     window.setFramerateLimit(60);
     if (!ImGui::SFML::Init(window)) return -1;
     ImGui::GetIO().IniFilename = nullptr;  // the layout is fixed, nothing to save
