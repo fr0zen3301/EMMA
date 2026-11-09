@@ -38,12 +38,16 @@ public:
     static constexpr std::size_t DIRECT_LIMIT = 64;  // up to this many bodies, exact pairwise forces
     static constexpr std::size_t MAX_TRAIL = 540;    // points per trail: three full turns
     static constexpr double TRAIL_TURN = 2.0 * units::DEG;  // a new trail point after this much turning
+    static constexpr double MIN_STEP = 1e-9;          // days (under 0.1 ms), the shortest step limitStep() allows
 
     // With a snapshot, the solar system starts from it; without, from the J2000 orbital elements
     void load(Preset preset, const SolarSnapshot* snapshot = nullptr);
     void clear();
 
     void step();                       // one fixed step of timeStep() days
+    // Shortens the step to at most maxDays, for slow speeds and real time. The preset's
+    // own step stays the upper limit
+    void limitStep(double maxDays);
     void updateEffects(float realDt);  // merge flashes, in real time
 
     void addBody(double mass, const Vector2D& position, const Vector2D& velocity);
@@ -91,6 +95,7 @@ private:
     Preset currentPreset = Preset::SolarSystem;
     double simTime = 0.0;
     double dt = 0.1;
+    double baseDt = 0.1;  // the preset's step, before limitStep()
     double viewRadiusAU = 2.0;
     double timeScaleHint = 30.0;
     bool calendar = false;

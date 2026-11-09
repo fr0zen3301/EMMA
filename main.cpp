@@ -72,6 +72,7 @@ int main(int argc, char** argv) {
         sim.load(preset, preset == Preset::SolarSystem && solarStart ? &*solarStart : nullptr);
         camera.fit(sim.viewRadius());
         state.timeScale = static_cast<float>(sim.suggestedTimeScale());
+        state.live = preset == Preset::SolarSystem;  // the solar system starts in real time
     };
     auto describeStart = [&]() -> std::string {
         if (!solarStart) return "Mean orbits for 1 January 2000.";
@@ -282,11 +283,21 @@ int main(int argc, char** argv) {
         // Fixed steps, as many as the chosen speed needs. The frame time is capped so a
         // stall (dragging the window on Windows pauses the loop) can't snowball.
         // At slow speeds, one step per frame, so bodies glide instead of jumping
-        sim.limitStep(static_cast<double>(state.timeScale) / 60.0);
-        if (!state.paused)
-            accumulatorDays += std::min(frameDt, MAX_FRAME_DT) * static_cast<double>(state.timeScale);
-        else if (state.stepRequested)
-            accumulatorDays += std::max(static_cast<double>(state.timeScale) / 60.0, sim.timeStep());
+        if (state.stepRequested || !sim.hasCalendar()) state.live = false;  // stepping, or no dates to follow
+        if (state.live) {
+            // Real time: run until the simulation's clock reads the computer's clock. After a
+            // pause or a reload it catches up at the full step, over a few frames if need be
+            if (!state.paused) {
+                accumulatorDays = calendar::julianDayNow() - (sim.epoch() + sim.time());
+                sim.limitStep(std::max(accumulatorDays, 0.0));
+            }
+        } else {
+            sim.limitStep(static_cast<double>(state.timeScale) / 60.0);
+            if (!state.paused)
+                accumulatorDays += std::min(frameDt, MAX_FRAME_DT) * static_cast<double>(state.timeScale);
+            else if (state.stepRequested)
+                accumulatorDays += std::max(static_cast<double>(state.timeScale) / 60.0, sim.timeStep());
+        }
         state.stepRequested = false;
 
         sf::Clock physicsClock;
@@ -296,7 +307,7 @@ int main(int argc, char** argv) {
             sim.step();
             accumulatorDays -= sim.timeStep();
             if (++steps % 32 == 0 && physicsClock.getElapsedTime().asSeconds() > PHYSICS_BUDGET) {
-                behind = true;  // drop the backlog instead of freezing the window
+                behind = !state.live;  // drop the backlog instead of freezing the window; real time picks it up next frame
                 accumulatorDays = 0.0;
                 break;
             }

@@ -151,15 +151,22 @@ void drawSidebar(UiState& st, const Stats& stats, Preset preset, float width, fl
     ImGui::SameLine();
     if (ImGui::Button("Step", ImVec2(46.f, 0.f))) {
         st.paused = true;
-        st.stepRequested = true;
+        st.stepRequested = true;  // also leaves real time
     }
     ImGui::Spacing();
 
     if (ImGui::CollapsingHeader("Simulation", ImGuiTreeNodeFlags_DefaultOpen)) {
         rowLabel("Time");
         ImGui::SetNextItemWidth(-1.f);
-        ImGui::SliderFloat("##timescale", &st.timeScale, 0.1f, 3650.f, formatRate(st.timeScale).c_str(),
-                           ImGuiSliderFlags_Logarithmic);
+        const std::string rate = st.live ? std::string("Real time") : formatRate(st.timeScale);
+        if (ImGui::SliderFloat("##timescale", &st.timeScale, 0.1f, 3650.f, rate.c_str(),
+                               ImGuiSliderFlags_Logarithmic))
+            st.live = false;  // picking a speed leaves real time
+        if (preset == Preset::SolarSystem) {
+            if (ImGui::Checkbox("Real time", &st.live) && st.live) st.paused = false;
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("One second per second, in step with your clock: the planets where they are right now");
+        }
         if (ImGui::Button("Clear")) st.clearRequested = true;
         ImGui::SameLine();
         if (ImGui::Button("Reset")) st.resetRequested = true;
@@ -272,7 +279,9 @@ void drawStatusBar(const Simulation& sim, const Camera& camera, sf::Vector2f mou
         ImGui::TextDisabled("Cursor %.4f, %.4f AU", w.x, w.y);
     }
     ImGui::SameLine(0.f, 28.f);
-    if (sim.hasCalendar())
+    if (sim.hasCalendar() && st.live)
+        ImGui::TextDisabled("Date %s", calendar::localDateTime(sim.epoch() + sim.time()).c_str());
+    else if (sim.hasCalendar())
         ImGui::TextDisabled("Date %s", calendar::date(sim.epoch() + sim.time()).c_str());
     else
         ImGui::TextDisabled("Elapsed %s", formatDuration(sim.time()).c_str());
@@ -378,7 +387,11 @@ std::string formatRate(double daysPerSecond) {
 
 std::string formatDuration(double days) {
     if (days >= units::DAYS_PER_YEAR) return printf_string("%.2f years", days / units::DAYS_PER_YEAR);
-    return printf_string("%.1f days", days);
+    if (days >= 1.0) return printf_string("%.1f days", days);
+    const double seconds = days * units::SECONDS_PER_DAY;
+    if (seconds >= 3600.0) return printf_string("%.1f hours", seconds / 3600.0);
+    if (seconds >= 60.0) return printf_string("%.1f minutes", seconds / 60.0);
+    return printf_string("%.3f s", seconds);
 }
 
 }

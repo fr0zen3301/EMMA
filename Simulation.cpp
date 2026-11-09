@@ -115,6 +115,7 @@ void Simulation::load(Preset preset, const SolarSnapshot* snapshot) {
         break;
     }
 
+    baseDt = dt;
     moveToBarycenter();
     accelerationsStale = true;
     ++changes;
@@ -212,6 +213,10 @@ void Simulation::addBody(double mass, const Vector2D& position, const Vector2D& 
 }
 
 // Integration
+
+void Simulation::limitStep(double maxDays) {
+    dt = std::clamp(maxDays, MIN_STEP, baseDt);
+}
 
 void Simulation::step() {
     if (accelerationsStale) {

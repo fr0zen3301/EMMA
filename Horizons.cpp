@@ -11,7 +11,7 @@ namespace horizons {
 namespace {
 
 // Horizons IDs in SolarSnapshot order. Mars to Neptune are their system
-// barycenters, which matches the system masses EMMA uses for them.
+// barycenters, which matches the system masses EMMA uses for them
 const char* const COMMANDS[SOLAR_BODY_COUNT] = {"10", "199", "299", "399", "301", "4", "5", "6", "7", "8"};
 
 const char* const CACHE_HEADER = "EMMA Horizons cache v1";
@@ -44,7 +44,7 @@ std::string firstMessage(const std::string& text) {
     return "Horizons sent no data";
 }
 
-} // namespace
+}
 
 std::string requestUrl(const char* command, double julianDay) {
     char time[32];
@@ -92,7 +92,6 @@ bool parseStateVector(const std::string& text, Vector2D& position, Vector2D& vel
             error = "unexpected row in the Horizons table: " + t.substr(0, 80);
             return false;
         }
-        // EMMA is 2D: keep the ecliptic x and y, drop the small z
         position = Vector2D(v[0], v[1]);
         velocity = Vector2D(v[3], v[4]);
         return true;
@@ -152,4 +151,4 @@ void saveCache(const std::filesystem::path& file, const SolarSnapshot& s) {
         out << s.position[i].x << ' ' << s.position[i].y << ' ' << s.velocity[i].x << ' ' << s.velocity[i].y << '\n';
 }
 
-} // namespace horizons
+}

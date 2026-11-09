@@ -2,6 +2,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <ctime>
 
 namespace calendar {
 
@@ -35,6 +36,19 @@ std::string date(double jd) {
 
     char text[16];
     std::snprintf(text, sizeof(text), "%04d-%02d-%02d", year, month, day);
+    return text;
+}
+
+std::string localDateTime(double jd) {
+    const std::time_t t = static_cast<std::time_t>(std::floor((jd - 2440587.5) * 86400.0));
+    std::tm local{};
+#ifdef _WIN32
+    localtime_s(&local, &t);
+#else
+    localtime_r(&t, &local);
+#endif
+    char text[32];
+    std::strftime(text, sizeof(text), "%Y-%m-%d %H:%M:%S", &local);
     return text;
 }
 

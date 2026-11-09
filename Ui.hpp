@@ -11,6 +11,7 @@
 // frame and clears them once handled
 struct UiState {
     float timeScale = 30.f;  // simulated days per real second
+    bool live = false;       // real time: one second per second, kept in step with the computer's clock
     bool paused = false;
     bool stepRequested = false;
 

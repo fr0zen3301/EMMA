@@ -6,7 +6,7 @@
 #include <string>
 
 // Today's positions for the solar system preset, from NASA JPL's Horizons
-// service (https://ssd.jpl.nasa.gov/horizons/), built on the DE441 ephemeris.
+// service (https://ssd.jpl.nasa.gov/horizons/), built on the DE441 ephemeris
 namespace horizons {
 
 struct Result {
@@ -17,7 +17,7 @@ struct Result {
 
 // Downloads one state vector per body, one request at a time. Blocking, so run
 // it on a worker thread. progress counts finished bodies; cancel stops it
-// between requests.
+// between requests
 Result fetchSolarSystem(double julianDay, std::atomic<int>* progress, const std::atomic<bool>* cancel);
 
 // The request for one body: barycentric, ecliptic plane, AU and days, CSV
@@ -31,4 +31,4 @@ std::filesystem::path defaultCachePath();
 std::optional<SolarSnapshot> loadCache(const std::filesystem::path& file);
 void saveCache(const std::filesystem::path& file, const SolarSnapshot& snapshot);
 
-} // namespace horizons
+}

@@ -111,7 +111,7 @@ bool get(const std::string& url, std::string& body, std::string& error) {
     return true;
 }
 
-} // namespace http
+}
 
 #else  // macOS and Linux: the system curl
 
@@ -145,6 +145,6 @@ bool get(const std::string& url, std::string& body, std::string& error) {
     return true;
 }
 
-} // namespace http
+}
 
 #endif
