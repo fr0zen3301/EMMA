@@ -1,4 +1,4 @@
-#include "emma/Integrator.hpp"
+#include "emma/VerletIntegrator.hpp"
 #include "emma/Constants.hpp"
 #include <algorithm>
 #include <cmath>

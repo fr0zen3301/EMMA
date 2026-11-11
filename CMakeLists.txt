@@ -52,7 +52,7 @@ add_library(emma_core STATIC
     engine/src/Simulation.cpp
     engine/src/World.cpp
     engine/src/Gravity.cpp
-    engine/src/Integrator.cpp
+    engine/src/VerletIntegrator.cpp
     engine/src/Collisions.cpp
     engine/src/Presets.cpp
     engine/src/Clock.cpp

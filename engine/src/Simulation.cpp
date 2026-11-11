@@ -25,21 +25,27 @@ void Simulation::load(Preset preset, const SolarSnapshot* snapshot) {
     flashes.clear();
 
     world.moveToBarycenter();
-    integrator.reset();
+    integrator->bodiesChanged();
     ++world.changes;
 }
 
 void Simulation::clear() {
     world.bodies.clear();
     flashes.clear();
-    integrator.reset();
+    integrator->bodiesChanged();
     ++world.changes;
 }
 
 void Simulation::addBody(double mass, const Vector2D& position, const Vector2D& velocity) {
     world.bodies.emplace_back(mass, position, velocity);
-    integrator.reset();  // Verlet needs the new body's acceleration before its first drift
+    integrator->bodiesChanged();  // Verlet needs the new body's acceleration before its first drift
     ++world.changes;
+}
+
+void Simulation::setIntegrator(std::unique_ptr<Integrator> next) {
+    if (!next) return;            // keep the current one rather than run with none
+    integrator = std::move(next);  // a unique_ptr can't be copied, only moved
+    integrator->bodiesChanged();  // the new one has computed nothing for these bodies yet
 }
 
 // Stepping
@@ -49,9 +55,9 @@ void Simulation::limitStep(double maxDays) {
 }
 
 void Simulation::step() {
-    lastSubsteps = integrator.step(world, gravity, dt, [this] {
+    lastSubsteps = integrator->step(world, gravity, dt, [this] {
         if (resolveCollisions(world.bodies, flashes)) {
-            integrator.forgetHistory();  // indices shifted, the last piece's accelerations no longer line up
+            integrator->forgetHistory();  // indices shifted, the last piece's accelerations no longer line up
             ++world.changes;
         }
         world.recordTrails();  // after every piece, so trails stay smooth through a close pass
