@@ -39,8 +39,9 @@ std::string describe(DWORD code) {
 
 namespace emma::http {
 
-bool get(const std::string& url, std::string& body, std::string& error) {
+bool get(const std::string& url, std::string& body, long& status, std::string& error) {
     body.clear();
+    status = 0;
     const std::string scheme = "https://";
     if (url.compare(0, scheme.size(), scheme) != 0) {
         error = "only https addresses are supported";
@@ -83,9 +84,9 @@ bool get(const std::string& url, std::string& body, std::string& error) {
         return false;
     }
 
-    DWORD status = 0, size = sizeof(status);
+    DWORD code = 0, size = sizeof(code);
     WinHttpQueryHeaders(request.h, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-                        WINHTTP_HEADER_NAME_BY_INDEX, &status, &size, WINHTTP_NO_HEADER_INDEX);
+                        WINHTTP_HEADER_NAME_BY_INDEX, &code, &size, WINHTTP_NO_HEADER_INDEX);
 
     for (;;) {
         DWORD available = 0;
@@ -104,10 +105,8 @@ bool get(const std::string& url, std::string& body, std::string& error) {
         body.resize(old + read);
     }
 
-    if (status != 200) {
-        error = "the server answered HTTP " + std::to_string(status);
-        return false;
-    }
+    // An error status still counts as a reply, body says the error
+    status = static_cast<long>(code);
     return true;
 }
 
@@ -117,31 +116,59 @@ bool get(const std::string& url, std::string& body, std::string& error) {
 
 #include <array>
 #include <cstdio>
+#include <cstdlib>
 
 namespace emma::http {
 
-bool get(const std::string& url, std::string& body, std::string& error) {
+namespace {
+// curl writes the HTTP status after the body
+const std::string STATUS_MARKER = "\nEMMA_HTTP_STATUS:";
+}
+
+bool get(const std::string& url, std::string& body, long& status, std::string& error) {
     body.clear();
+    status = 0;
     // EMMA builds its URLs with every quote percent-encoded, so single quotes keep the shell out of it
     if (url.find('\'') != std::string::npos) {
         error = "unsupported character in the address";
         return false;
     }
-    const std::string command = "curl -sS --fail --max-time 20 '" + url + "' 2>&1";
+    // No --fail: that would throw away the body of an error reply, which usually
+    // explains the error. -w adds the status line that STATUS_MARKER finds
+    const std::string command =
+        "curl -sS --max-time 20 -w '\\nEMMA_HTTP_STATUS:%{http_code}\\n' '" + url + "' 2>&1";
     FILE* pipe = popen(command.c_str(), "r");
     if (!pipe) {
         error = "couldn't start curl";
         return false;
     }
+    std::string output;
     std::array<char, 4096> buffer;
     std::size_t n;
-    while ((n = std::fread(buffer.data(), 1, buffer.size(), pipe)) > 0) body.append(buffer.data(), n);
+    while ((n = std::fread(buffer.data(), 1, buffer.size(), pipe)) > 0) output.append(buffer.data(), n);
+    const int exitCode = pclose(pipe);
 
-    if (pclose(pipe) != 0) {
-        error = body.empty() ? "curl failed" : body.substr(0, 200);
-        while (!error.empty() && (error.back() == '\n' || error.back() == '\r')) error.pop_back();
+    // Cut out the status line, leaving the body exactly as sent
+    const std::size_t at = output.rfind(STATUS_MARKER);
+    if (at != std::string::npos) {
+        const std::size_t digits = at + STATUS_MARKER.size();
+        const std::size_t end = output.find('\n', digits);
+        status = std::strtol(output.substr(digits, end == std::string::npos ? std::string::npos : end - digits).c_str(),
+                             nullptr, 10);
+        output.erase(at, end == std::string::npos ? std::string::npos : end + 1 - at);
+    }
+
+    // No reply at all: curl explains why in a line starting "curl: ("
+    if (exitCode != 0 || status == 0) {
+        const std::size_t message = output.find("curl: (");
+        error = message == std::string::npos ? output : output.substr(message);
+        const std::size_t lineEnd = error.find_first_of("\r\n");
+        if (lineEnd != std::string::npos) error.erase(lineEnd);
+        if (error.empty()) error = "curl failed";
+        if (error.size() > 200) error = error.substr(0, 200);
         return false;
     }
+    body = std::move(output);
     return true;
 }
 

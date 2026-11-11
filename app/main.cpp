@@ -234,7 +234,7 @@ int main(int argc, char** argv) {
                     }
                     sourceNote = describeStart();
                 } else {
-                    sourceNote = "Couldn't reach JPL Horizons: " + result.error + ". " + describeStart();
+                    sourceNote = "Couldn't get today's positions from JPL Horizons: " + result.error + ". " + describeStart();
                     canRetry = true;
                 }
                 if (pausedForFetch && clock.paused) clock.paused = false;

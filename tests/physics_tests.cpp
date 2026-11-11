@@ -85,6 +85,47 @@ void testHorizonsParse() {
     CHECK(url.find("OUT_UNITS=%27AU-D%27") != std::string::npos, "request not in AU and days: %s", url.c_str());
 }
 
+void testHorizonsReply() {
+    // A good JSON reply: the table sits in "result", with escaped newlines and quotes
+    const std::string good =
+        "{\"signature\":{\"source\":\"NASA/JPL Horizons API\",\"version\":\"1.2\"},"
+        "\"result\":\"Target body name: Sun (10)\\n$$SOE\\n"
+        "2461355.500000000, A.D. 2026-Nov-11 00:00:00.0000, 1.0E-03, -2.0E-03, 0.0, 3.0E-06, 4.0E-06, 0.0,\\n"
+        "$$EOE\\nQuote: \\\"done\\\" \\u00e9\\n\"}";
+    std::string output, error;
+    CHECK(horizons::parseReply(good, 200, output, error), "rejected a good reply: %s", error.c_str());
+    CHECK(output.find("$$SOE\n") != std::string::npos, "newlines not unescaped: %s", output.c_str());
+    CHECK(output.find("\"done\"") != std::string::npos, "quotes not unescaped: %s", output.c_str());
+    CHECK(output.find("\xC3\xA9") != std::string::npos, "\\u00e9 did not become UTF-8");
+    Vector2D p, v;
+    CHECK(horizons::parseStateVector(output, p, v, error) && p.x == 1.0E-03 && v.y == 4.0E-06,
+          "table inside the JSON reply not read: %s", error.c_str());
+
+    // Horizons puts errors it detects in "error", sometimes over several lines
+    const std::string failed =
+        "{\"signature\":{\"version\":\"1.2\"},\"error\":\" \\n"
+        "Insufficient ephemeris data has been loaded to compute the state of 10 (SUN)\\n"
+        "relative to 0 (SOLAR SYSTEM BARYCENTER).\\n\"}";
+    error.clear();
+    CHECK(!horizons::parseReply(failed, 200, output, error), "accepted a reply with an error field");
+    CHECK(error.rfind("Insufficient ephemeris data", 0) == 0 && error.find("(SUN) relative") != std::string::npos,
+          "error field not read and joined: '%s'", error.c_str());
+
+    // A 400 explains itself in "message"; a 503 may not be JSON at all
+    error.clear();
+    CHECK(!horizons::parseReply("{\"message\":\"bad TLIST value\"}", 400, output, error) && error == "bad TLIST value",
+          "400 message: '%s'", error.c_str());
+    error.clear();
+    CHECK(!horizons::parseReply("<html>busy</html>", 503, output, error) && error.find("503") != std::string::npos,
+          "503 reply: '%s'", error.c_str());
+
+    // JSON, and a START_TIME span instead of TLIST, which Horizons misread in November 2026
+    const std::string url = horizons::requestUrl("10", 2461355.5);
+    CHECK(url.find("format=json") != std::string::npos, "request isn't JSON: %s", url.c_str());
+    CHECK(url.find("START_TIME=%27JD2461355.500000%27") != std::string::npos && url.find("TLIST") == std::string::npos,
+          "request should use START_TIME, not TLIST: %s", url.c_str());
+}
+
 void testJ2000Start() {
     // On 1 January 2000, two days before perihelion, Earth was 0.9833 AU from the
     // Sun at heliocentric longitude 100.38 deg
@@ -345,6 +386,7 @@ struct Test {
 const Test TESTS[] = {
     {"calendar", testCalendar},
     {"horizons_parse", testHorizonsParse},
+    {"horizons_reply", testHorizonsReply},
     {"j2000_start", testJ2000Start},
     {"earth_year", testEarthYear},
     {"conservation", testConservation},
