@@ -6,6 +6,7 @@
 #include "emma/Clock.hpp"
 #include "emma/Constants.hpp"
 #include "emma/Horizons.hpp"
+#include "emma/IAS15Integrator.hpp"
 #include "emma/QuadTree.hpp"
 #include "emma/Simulation.hpp"
 #include <algorithm>
@@ -14,6 +15,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <random>
 #include <string>
 #include <vector>
@@ -140,10 +142,9 @@ void testJ2000Start() {
     CHECK(std::abs(longitude - 100.38) < 0.2, "longitude %.3f deg, expected 100.38", longitude);
 }
 
-void testEarthYear() {
+void earthYear(Simulation& sim) {
     // Time for the Earth-Moon barycenter to go once around the Sun. The sidereal
     // year is 365.2564 days
-    Simulation sim;
     sim.load(Preset::SolarSystem);
     auto angle = [&sim]() {
         const Body& earth = find(sim, "Earth");
@@ -173,6 +174,17 @@ void testEarthYear() {
     CHECK(std::abs(period - 365.2564) < 0.05, "orbit took %.4f days, expected 365.2564", period);
 }
 
+void testEarthYear() {
+    Simulation sim;
+    earthYear(sim);
+}
+
+void testIas15EarthYear() {
+    Simulation sim;
+    sim.setIntegrator(std::make_unique<IAS15Integrator>());
+    earthYear(sim);
+}
+
 void testConservation() {
     // Ten years of the solar system
     Simulation sim;
@@ -195,9 +207,28 @@ void testConservation() {
     CHECK(sim.getBodyCount() == SOLAR_BODY_COUNT, "bodies merged: %zu left", sim.getBodyCount());
 }
 
-void testClosePass() {
-    // Two Earth-mass bodies miss each other by about 5 Earth radii at 4 km/s
+void testIas15Conservation() {
+    // The same ten years with IAS15: the errors should sit near rounding, far below Verlet's
     Simulation sim;
+    sim.setIntegrator(std::make_unique<IAS15Integrator>());
+    sim.load(Preset::SolarSystem);
+    const double e0 = sim.totalEnergy(), l0 = sim.angularMomentum();
+    const int steps = static_cast<int>(10.0 * units::DAYS_PER_YEAR / sim.timeStep());
+    double worstEnergy = 0.0;
+    for (int i = 0; i < steps; ++i) {
+        sim.step();
+        if (i % 100 == 0) worstEnergy = std::max(worstEnergy, relative(sim.totalEnergy(), e0));
+    }
+    const double momentum = relative(sim.angularMomentum(), l0);
+    std::printf("  10 years with IAS15: worst energy drift %.2e, angular momentum drift %.2e\n", worstEnergy,
+                momentum);
+    CHECK(worstEnergy < 1e-10, "energy drifted by %.2e", worstEnergy);
+    CHECK(momentum < 1e-10, "angular momentum drifted by %.2e", momentum);
+    CHECK(sim.getBodyCount() == SOLAR_BODY_COUNT, "bodies merged: %zu left", sim.getBodyCount());
+}
+
+void closePass(Simulation& sim, double tolerance) {
+    // Two Earth-mass bodies miss each other by about 5 Earth radii at 4 km/s
     sim.load(Preset::Empty);
     const double m = units::EARTH_MASS;
     const double v = 2.0 * units::KMS_TO_AU_PER_DAY;  // each, so 4 km/s apart
@@ -221,15 +252,26 @@ void testClosePass() {
     if (sim.getBodyCount() != 2) return;
     const double change = relative(pairEnergy(), e0);
     std::printf("  close pass: steps split into up to %d pieces, energy change %.2e\n", maxPieces, change);
-    // Split steps leave an error near 1e-4; an unsplit step through this pass is off by order 1
-    CHECK(change < 1e-2, "energy changed by %.2e through the pass", change);
+    CHECK(change < tolerance, "energy changed by %.2e through the pass", change);
     CHECK(maxPieces > 1, "the close pass wasn't split into smaller steps");
 }
 
-void testHeadOnMerge() {
+void testClosePass() {
+    // Verlet's split steps leave an error near 1e-4; an unsplit step through this pass is off by order 1
+    Simulation sim;
+    closePass(sim, 1e-2);
+}
+
+void testIas15ClosePass() {
+    // IAS15 shortens its own pieces through the pass and should stay far more accurate
+    Simulation sim;
+    sim.setIntegrator(std::make_unique<IAS15Integrator>());
+    closePass(sim, 1e-7);
+}
+
+void headOnMerge(Simulation& sim) {
     // Head-on collision with zero total momentum: one body should remain, with
     // the combined mass, at rest, at the original center of mass
-    Simulation sim;
     sim.load(Preset::Empty);
     const double m1 = units::EARTH_MASS, m2 = 0.5 * units::EARTH_MASS;
     const double v = 10.0 * units::KMS_TO_AU_PER_DAY;
@@ -246,6 +288,17 @@ void testHeadOnMerge() {
           merged.velocity.magnitude());
     CHECK(std::abs(merged.position.x - centerX) < 1e-9 && std::abs(merged.position.y) < 1e-9,
           "merged at %.3e, %.3e, expected %.3e, 0", merged.position.x, merged.position.y, centerX);
+}
+
+void testHeadOnMerge() {
+    Simulation sim;
+    headOnMerge(sim);
+}
+
+void testIas15HeadOnMerge() {
+    Simulation sim;
+    sim.setIntegrator(std::make_unique<IAS15Integrator>());
+    headOnMerge(sim);
 }
 
 void testBarnesHut() {
@@ -396,6 +449,10 @@ const Test TESTS[] = {
     {"dominant_body", testDominantBody},
     {"trail_smoothness", testTrailSmoothness},
     {"clock", testClock},
+    {"ias15_earth_year", testIas15EarthYear},
+    {"ias15_conservation", testIas15Conservation},
+    {"ias15_close_pass", testIas15ClosePass},
+    {"ias15_head_on_merge", testIas15HeadOnMerge},
 };
 
 }
