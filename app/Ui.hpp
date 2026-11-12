@@ -22,6 +22,7 @@ struct UiState {
     bool resetRequested = false;
     bool resetViewRequested = false;
     int presetRequested = -1;
+    int integratorRequested = -1;
     bool retryFetchRequested = false;
 };
 
@@ -41,7 +42,7 @@ namespace ui {
 void applyTheme();
 void loadFont(const std::filesystem::path& exeDir);
 
-void drawSidebar(UiState& state, emma::Clock& clock, const Stats& stats, emma::Preset preset, float width,
+void drawSidebar(UiState& state, emma::Clock& clock, const Stats& stats, emma::Preset preset, const char* integratorName, float width,
                  float height);
 void drawStatusBar(const emma::Simulation& sim, const Camera& camera, sf::Vector2f mouse, const emma::Clock& clock,
                    float y, float width, float height);
