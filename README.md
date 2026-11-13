@@ -76,7 +76,7 @@ Verlet is symplectic. In practice that means its energy error rises and falls ar
 
 Close passes need smaller steps. A single long step through a near miss would jump past the closest point and send the pair apart faster than it arrived, which looks like the bodies pushing each other away. So before each piece of a step, EMMA works out two times for every pair of bodies. One is the pair's dynamical time, √(r³ / G(m₁ + m₂)), which sets how quickly the two can swing around each other. The other is the time the pair needs to close the gap at its current speed. A piece can last at most 3% of the shortest of these times.
 
-Away from close passes, that rule allows the whole base step in one piece, so Verlet keeps its long-run energy behavior. During a close pass the step splits into smaller pieces, and the status bar shows the count. Above 64 bodies, checking every pair would cost more than the forces themselves, so EMMA instead sizes the pieces from how fast each body's acceleration changed over the previous piece. The dashed predicted path always uses Verlet with this rule, whichever integrator moves the bodies.
+Away from close passes, that rule allows the whole base step in one piece, so Verlet keeps its long-run energy behavior. During a close pass the step splits into smaller pieces, and the status bar shows the count. Above 64 bodies, checking every pair would cost more than the forces themselves, so EMMA instead sizes the pieces from how fast each body's acceleration changed over the previous piece. Right after a load, a new body or a merge there is no previous piece, so that one piece uses the pairwise check. The dashed predicted path always uses Verlet with this rule, whichever integrator moves the bodies.
 
 #### IAS15
 
@@ -160,6 +160,7 @@ The tests build along with EMMA and don't need SFML. They check that:
 - a head-on collision keeps mass and momentum
 - IAS15 passes the same four checks, and holds energy and angular momentum to 1 part in 10¹⁰ over the ten years
 - IAS15 hands over to Verlet above 64 bodies
+- above 64 bodies, a close pass right after bodies are added still splits the step
 - the Barnes-Hut tree matches an exact sum
 - each star of Alpha Centauri rules the space around it
 - trails stay smooth

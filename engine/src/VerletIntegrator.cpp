@@ -60,27 +60,30 @@ double VerletIntegrator::dynamicalTime(const std::vector<Body>& bodies) const {
     double t = std::numeric_limits<double>::infinity();
     const std::size_t n = bodies.size();
 
-    if (n <= Gravity::DIRECT_LIMIT) {
-        // For each pair, the shorter of its dynamical time sqrt(r^3 / G(m1 + m2))
-        // and the time it takes to close the gap at the current relative speed
+    // With many bodies, scanning every pair on every piece would cost more than the
+    // tree saves. Use how fast each body's acceleration changed over the last piece:
+    // |a| / |da/dt|
+    if (n > Gravity::DIRECT_LIMIT && jerkValid && oldAcceleration.size() == n) {
         for (std::size_t i = 0; i < n; ++i) {
-            for (std::size_t j = i + 1; j < n; ++j) {
-                const double r2 = (bodies[j].position - bodies[i].position).lengthSquared();
-                const double mu = units::G * (bodies[i].mass + bodies[j].mass);
-                if (mu > 0.0) t = std::min(t, std::sqrt(r2 * std::sqrt(r2) / mu));
-                const double v2 = (bodies[j].velocity - bodies[i].velocity).lengthSquared();
-                if (v2 > 0.0) t = std::min(t, std::sqrt(r2 / v2));
-            }
+            const double change = (bodies[i].acceleration - oldAcceleration[i]).magnitude();
+            if (change > 0.0) t = std::min(t, bodies[i].acceleration.magnitude() * lastPiece / change);
         }
         return t;
     }
 
-    // With many bodies, scanning every pair would cost more than the tree saves.
-    // Use how fast each body's acceleration changed over the last piece: |a| / |da/dt|
-    if (!jerkValid || oldAcceleration.size() != n) return t;
+    // For each pair, the shorter of its dynamical time sqrt(r^3 / G(m1 + m2))
+    // and the time it takes to close the gap at the current relative speed.
+    // Above DIRECT_LIMIT this runs only when there is no last piece to learn from:
+    // after a load, a new body or a merge. A merge means bodies were just touching,
+    // which is exactly when the step needs splitting, so it can't run unchecked
     for (std::size_t i = 0; i < n; ++i) {
-        const double change = (bodies[i].acceleration - oldAcceleration[i]).magnitude();
-        if (change > 0.0) t = std::min(t, bodies[i].acceleration.magnitude() * lastPiece / change);
+        for (std::size_t j = i + 1; j < n; ++j) {
+            const double r2 = (bodies[j].position - bodies[i].position).lengthSquared();
+            const double mu = units::G * (bodies[i].mass + bodies[j].mass);
+            if (mu > 0.0) t = std::min(t, std::sqrt(r2 * std::sqrt(r2) / mu));
+            const double v2 = (bodies[j].velocity - bodies[i].velocity).lengthSquared();
+            if (v2 > 0.0) t = std::min(t, std::sqrt(r2 / v2));
+        }
     }
     return t;
 }

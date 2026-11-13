@@ -301,6 +301,23 @@ void testIas15HeadOnMerge() {
     headOnMerge(sim);
 }
 
+void testCrowdedClosePass() {
+    // Above DIRECT_LIMIT bodies Verlet sizes its pieces from how the accelerations
+    // changed over the last piece. Right after bodies are added or merge there is no
+    // last piece, so it must fall back to the pairwise check, not take the whole step
+    Simulation sim;
+    sim.load(Preset::Empty);
+    for (std::size_t i = 0; i < Simulation::DIRECT_LIMIT; ++i)
+        sim.addBody(units::EARTH_MASS, Vector2D(10.0 + static_cast<double>(i), 0.0), Vector2D());
+    // Two bodies 0.01 AU apart, closing at 0.01 AU/day: about a day from meeting,
+    // so the 0.1-day step has to split
+    sim.addBody(units::EARTH_MASS, Vector2D(0.0, 0.0), Vector2D());
+    sim.addBody(units::EARTH_MASS, Vector2D(0.01, 0.0), Vector2D(-0.01, 0.0005));
+    sim.step();
+    CHECK(sim.lastSubstepCount() > 1, "the first step with %zu bodies ran as %d piece(s)",
+          sim.getBodyCount(), sim.lastSubstepCount());
+}
+
 void testIas15Guard() {
     // Above DIRECT_LIMIT bodies the tree's approximate forces would make IAS15 crawl,
     // so Verlet takes over, and IAS15 can't be picked again until the count drops
@@ -472,6 +489,7 @@ const Test TESTS[] = {
     {"ias15_close_pass", testIas15ClosePass},
     {"ias15_head_on_merge", testIas15HeadOnMerge},
     {"ias15_guard", testIas15Guard},
+    {"crowded_close_pass", testCrowdedClosePass},
 };
 
 }
