@@ -19,8 +19,13 @@ struct Result {
 // it on a worker thread. progress counts finished bodies
 Result fetchSolarSystem(double julianDay, std::atomic<int>* progress, const std::atomic<bool>* cancel);
 
-// The request for one body: barycentric, ecliptic plane, AU and days, CSV
+// The request for one body: barycentric, ecliptic plane, AU and days, a CSV
+// table inside a JSON reply
 std::string requestUrl(const char* command, double julianDay);
+
+// Unpacks a JSON reply. On success, output holds the Horizons text. Otherwise
+// error holds the "error" or "message" field, or a note on the HTTP status
+bool parseReply(const std::string& json, long status, std::string& output, std::string& error);
 
 // Reads the first row of a Horizons VECTORS table (CSV) into the ecliptic plane
 bool parseStateVector(const std::string& text, Vector2D& position, Vector2D& velocity, std::string& error);

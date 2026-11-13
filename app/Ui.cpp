@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <iostream>
 #include <system_error>
+#include <cstring>
 
 using namespace emma;
 
@@ -136,7 +137,7 @@ void loadFont(const std::filesystem::path& exeDir) {
     std::cerr << "EMMA: fonts/font.otf not found, using ImGui's built-in font\n";
 }
 
-void drawSidebar(UiState& st, emma::Clock& clock, const Stats& stats, Preset preset, float width, float height) {
+void drawSidebar(UiState& st, emma::Clock& clock, const Stats& stats, Preset preset, const char* integratorName, float width, float height) {
     ImGui::SetNextWindowPos(ImVec2(0.f, 0.f));
     ImGui::SetNextWindowSize(ImVec2(width, height));
     const ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
@@ -168,6 +169,19 @@ void drawSidebar(UiState& st, emma::Clock& clock, const Stats& stats, Preset pre
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("One second per second, in step with your clock: the planets where they are right now");
         }
+        // Which integrator moves the bodies
+        static const char* const integrators[] = {"Velocity Verlet", "IAS15"};
+        int currentIntegrator = 0;
+        for (int i = 0; i < IM_ARRAYSIZE(integrators); ++i) {
+            if (std::strcmp(integratorName, integrators[i]) == 0) currentIntegrator = i;
+        }
+        rowLabel("Integrator");
+        ImGui::SetNextItemWidth(-1.f);
+        if (ImGui::Combo("##integrator", &currentIntegrator, integrators, IM_ARRAYSIZE(integrators)))
+            st.integratorRequested = currentIntegrator;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Velocity Verlet: fast, with a small energy wobble.\n"
+                              "IAS15: as accurate as a double allows but slower. Use Verlet above 64 bodies.");
         if (ImGui::Button("Clear")) st.clearRequested = true;
         ImGui::SameLine();
         if (ImGui::Button("Reset")) st.resetRequested = true;
@@ -293,6 +307,8 @@ void drawStatusBar(const Simulation& sim, const Camera& camera, sf::Vector2f mou
     else
         ImGui::TextDisabled("Step %s", formatDuration(sim.timeStep()).c_str());
 
+    ImGui::SameLine(0.f, 28.f);
+    ImGui::TextDisabled("%s", sim.getIntegrator().name());
     const char* status = clock.paused ? "Paused" : "Running";
     ImGui::SameLine(width - 12.f - ImGui::CalcTextSize(status).x);
     ImGui::TextColored(clock.paused ? WARN : ACCENT, "%s", status);

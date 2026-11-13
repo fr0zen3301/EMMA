@@ -6,6 +6,7 @@
 #include "emma/Clock.hpp"
 #include "emma/Constants.hpp"
 #include "emma/Horizons.hpp"
+#include "emma/IAS15Integrator.hpp"
 #include "emma/QuadTree.hpp"
 #include "emma/Simulation.hpp"
 #include <algorithm>
@@ -14,6 +15,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <random>
 #include <string>
 #include <vector>
@@ -85,6 +87,47 @@ void testHorizonsParse() {
     CHECK(url.find("OUT_UNITS=%27AU-D%27") != std::string::npos, "request not in AU and days: %s", url.c_str());
 }
 
+void testHorizonsReply() {
+    // A good JSON reply: the table sits in "result", with escaped newlines and quotes
+    const std::string good =
+        "{\"signature\":{\"source\":\"NASA/JPL Horizons API\",\"version\":\"1.2\"},"
+        "\"result\":\"Target body name: Sun (10)\\n$$SOE\\n"
+        "2461355.500000000, A.D. 2026-Nov-11 00:00:00.0000, 1.0E-03, -2.0E-03, 0.0, 3.0E-06, 4.0E-06, 0.0,\\n"
+        "$$EOE\\nQuote: \\\"done\\\" \\u00e9\\n\"}";
+    std::string output, error;
+    CHECK(horizons::parseReply(good, 200, output, error), "rejected a good reply: %s", error.c_str());
+    CHECK(output.find("$$SOE\n") != std::string::npos, "newlines not unescaped: %s", output.c_str());
+    CHECK(output.find("\"done\"") != std::string::npos, "quotes not unescaped: %s", output.c_str());
+    CHECK(output.find("\xC3\xA9") != std::string::npos, "\\u00e9 did not become UTF-8");
+    Vector2D p, v;
+    CHECK(horizons::parseStateVector(output, p, v, error) && p.x == 1.0E-03 && v.y == 4.0E-06,
+          "table inside the JSON reply not read: %s", error.c_str());
+
+    // Horizons puts errors it detects in "error", sometimes over several lines
+    const std::string failed =
+        "{\"signature\":{\"version\":\"1.2\"},\"error\":\" \\n"
+        "Insufficient ephemeris data has been loaded to compute the state of 10 (SUN)\\n"
+        "relative to 0 (SOLAR SYSTEM BARYCENTER).\\n\"}";
+    error.clear();
+    CHECK(!horizons::parseReply(failed, 200, output, error), "accepted a reply with an error field");
+    CHECK(error.rfind("Insufficient ephemeris data", 0) == 0 && error.find("(SUN) relative") != std::string::npos,
+          "error field not read and joined: '%s'", error.c_str());
+
+    // A 400 explains itself in "message"; a 503 may not be JSON at all
+    error.clear();
+    CHECK(!horizons::parseReply("{\"message\":\"bad TLIST value\"}", 400, output, error) && error == "bad TLIST value",
+          "400 message: '%s'", error.c_str());
+    error.clear();
+    CHECK(!horizons::parseReply("<html>busy</html>", 503, output, error) && error.find("503") != std::string::npos,
+          "503 reply: '%s'", error.c_str());
+
+    // JSON, and a START_TIME span instead of TLIST, which Horizons misread in November 2026
+    const std::string url = horizons::requestUrl("10", 2461355.5);
+    CHECK(url.find("format=json") != std::string::npos, "request isn't JSON: %s", url.c_str());
+    CHECK(url.find("START_TIME=%27JD2461355.500000%27") != std::string::npos && url.find("TLIST") == std::string::npos,
+          "request should use START_TIME, not TLIST: %s", url.c_str());
+}
+
 void testJ2000Start() {
     // On 1 January 2000, two days before perihelion, Earth was 0.9833 AU from the
     // Sun at heliocentric longitude 100.38 deg
@@ -99,10 +142,9 @@ void testJ2000Start() {
     CHECK(std::abs(longitude - 100.38) < 0.2, "longitude %.3f deg, expected 100.38", longitude);
 }
 
-void testEarthYear() {
+void earthYear(Simulation& sim) {
     // Time for the Earth-Moon barycenter to go once around the Sun. The sidereal
     // year is 365.2564 days
-    Simulation sim;
     sim.load(Preset::SolarSystem);
     auto angle = [&sim]() {
         const Body& earth = find(sim, "Earth");
@@ -132,6 +174,17 @@ void testEarthYear() {
     CHECK(std::abs(period - 365.2564) < 0.05, "orbit took %.4f days, expected 365.2564", period);
 }
 
+void testEarthYear() {
+    Simulation sim;
+    earthYear(sim);
+}
+
+void testIas15EarthYear() {
+    Simulation sim;
+    sim.setIntegrator(std::make_unique<IAS15Integrator>());
+    earthYear(sim);
+}
+
 void testConservation() {
     // Ten years of the solar system
     Simulation sim;
@@ -154,9 +207,28 @@ void testConservation() {
     CHECK(sim.getBodyCount() == SOLAR_BODY_COUNT, "bodies merged: %zu left", sim.getBodyCount());
 }
 
-void testClosePass() {
-    // Two Earth-mass bodies miss each other by about 5 Earth radii at 4 km/s
+void testIas15Conservation() {
+    // The same ten years with IAS15: the errors should sit near rounding, far below Verlet's
     Simulation sim;
+    sim.setIntegrator(std::make_unique<IAS15Integrator>());
+    sim.load(Preset::SolarSystem);
+    const double e0 = sim.totalEnergy(), l0 = sim.angularMomentum();
+    const int steps = static_cast<int>(10.0 * units::DAYS_PER_YEAR / sim.timeStep());
+    double worstEnergy = 0.0;
+    for (int i = 0; i < steps; ++i) {
+        sim.step();
+        if (i % 100 == 0) worstEnergy = std::max(worstEnergy, relative(sim.totalEnergy(), e0));
+    }
+    const double momentum = relative(sim.angularMomentum(), l0);
+    std::printf("  10 years with IAS15: worst energy drift %.2e, angular momentum drift %.2e\n", worstEnergy,
+                momentum);
+    CHECK(worstEnergy < 1e-10, "energy drifted by %.2e", worstEnergy);
+    CHECK(momentum < 1e-10, "angular momentum drifted by %.2e", momentum);
+    CHECK(sim.getBodyCount() == SOLAR_BODY_COUNT, "bodies merged: %zu left", sim.getBodyCount());
+}
+
+void closePass(Simulation& sim, double tolerance) {
+    // Two Earth-mass bodies miss each other by about 5 Earth radii at 4 km/s
     sim.load(Preset::Empty);
     const double m = units::EARTH_MASS;
     const double v = 2.0 * units::KMS_TO_AU_PER_DAY;  // each, so 4 km/s apart
@@ -180,15 +252,26 @@ void testClosePass() {
     if (sim.getBodyCount() != 2) return;
     const double change = relative(pairEnergy(), e0);
     std::printf("  close pass: steps split into up to %d pieces, energy change %.2e\n", maxPieces, change);
-    // Split steps leave an error near 1e-4; an unsplit step through this pass is off by order 1
-    CHECK(change < 1e-2, "energy changed by %.2e through the pass", change);
+    CHECK(change < tolerance, "energy changed by %.2e through the pass", change);
     CHECK(maxPieces > 1, "the close pass wasn't split into smaller steps");
 }
 
-void testHeadOnMerge() {
+void testClosePass() {
+    // Verlet's split steps leave an error near 1e-4; an unsplit step through this pass is off by order 1
+    Simulation sim;
+    closePass(sim, 1e-2);
+}
+
+void testIas15ClosePass() {
+    // IAS15 shortens its own pieces through the pass and should stay far more accurate
+    Simulation sim;
+    sim.setIntegrator(std::make_unique<IAS15Integrator>());
+    closePass(sim, 1e-7);
+}
+
+void headOnMerge(Simulation& sim) {
     // Head-on collision with zero total momentum: one body should remain, with
     // the combined mass, at rest, at the original center of mass
-    Simulation sim;
     sim.load(Preset::Empty);
     const double m1 = units::EARTH_MASS, m2 = 0.5 * units::EARTH_MASS;
     const double v = 10.0 * units::KMS_TO_AU_PER_DAY;
@@ -205,6 +288,17 @@ void testHeadOnMerge() {
           merged.velocity.magnitude());
     CHECK(std::abs(merged.position.x - centerX) < 1e-9 && std::abs(merged.position.y) < 1e-9,
           "merged at %.3e, %.3e, expected %.3e, 0", merged.position.x, merged.position.y, centerX);
+}
+
+void testHeadOnMerge() {
+    Simulation sim;
+    headOnMerge(sim);
+}
+
+void testIas15HeadOnMerge() {
+    Simulation sim;
+    sim.setIntegrator(std::make_unique<IAS15Integrator>());
+    headOnMerge(sim);
 }
 
 void testBarnesHut() {
@@ -345,6 +439,7 @@ struct Test {
 const Test TESTS[] = {
     {"calendar", testCalendar},
     {"horizons_parse", testHorizonsParse},
+    {"horizons_reply", testHorizonsReply},
     {"j2000_start", testJ2000Start},
     {"earth_year", testEarthYear},
     {"conservation", testConservation},
@@ -354,6 +449,10 @@ const Test TESTS[] = {
     {"dominant_body", testDominantBody},
     {"trail_smoothness", testTrailSmoothness},
     {"clock", testClock},
+    {"ias15_earth_year", testIas15EarthYear},
+    {"ias15_conservation", testIas15Conservation},
+    {"ias15_close_pass", testIas15ClosePass},
+    {"ias15_head_on_merge", testIas15HeadOnMerge},
 };
 
 }

@@ -7,8 +7,10 @@
 #include "emma/Gravity.hpp"
 #include "emma/Integrator.hpp"
 #include "emma/Presets.hpp"
+#include "emma/VerletIntegrator.hpp"
 #include "emma/World.hpp"
 #include <cstddef>
+#include <memory>
 #include <vector>
 
 namespace emma {
@@ -42,6 +44,10 @@ public:
 
     void addBody(double mass, const Vector2D& position, const Vector2D& velocity);
 
+    // Swaps the integrator. The new one starts knowing nothing about the bodies
+    void setIntegrator(std::unique_ptr<Integrator> next);
+    const Integrator& getIntegrator() const { return *integrator; }
+
     // The body whose gravity dominates at p: the smallest Laplace sphere of
     // influence containing p, otherwise the strongest pull. -1 with no bodies
     int dominantBody(const Vector2D& p, int exclude = -1) const;
@@ -73,7 +79,7 @@ private:
 
     World world;
     Gravity gravity;
-    VerletIntegrator integrator;
+    std::unique_ptr<Integrator> integrator = std::make_unique<VerletIntegrator>();
     Preset currentPreset = Preset::SolarSystem;
     double dt = 0.1;
     double baseDt = 0.1;  // the preset's step, before limitStep()

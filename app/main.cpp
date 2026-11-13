@@ -8,6 +8,9 @@
 #include "emma/Simulation.hpp"
 #include "imgui.h"
 #include "imgui-SFML.h"
+#include "emma/IAS15Integrator.hpp"
+#include "emma/VerletIntegrator.hpp"
+#include <memory>
 #include <SFML/Graphics.hpp>
 #include <algorithm>
 #include <atomic>
@@ -234,7 +237,7 @@ int main(int argc, char** argv) {
                     }
                     sourceNote = describeStart();
                 } else {
-                    sourceNote = "Couldn't reach JPL Horizons: " + result.error + ". " + describeStart();
+                    sourceNote = "Couldn't get today's positions from JPL Horizons: " + result.error + ". " + describeStart();
                     canRetry = true;
                 }
                 if (pausedForFetch && clock.paused) clock.paused = false;
@@ -257,12 +260,18 @@ int main(int argc, char** argv) {
         stats.behind = behindTimer > 0.f;
         stats.sourceNote = sourceNote;
         stats.canRetry = canRetry && !fetch.valid();
-        ui::drawSidebar(state, clock, stats, sim.preset(), SIDEBAR_WIDTH, height - STATUS_HEIGHT);
+        ui::drawSidebar(state, clock, stats, sim.preset(), sim.getIntegrator().name(), SIDEBAR_WIDTH, height - STATUS_HEIGHT);
         ui::drawStatusBar(sim, camera, mouse, clock, height - STATUS_HEIGHT, width, STATUS_HEIGHT);
 
         if (state.presetRequested >= 0) {
             loadPreset(static_cast<Preset>(state.presetRequested));
             state.presetRequested = -1;
+        }
+        if (state.integratorRequested >= 0) {
+            if (state.integratorRequested == 1) sim.setIntegrator(std::make_unique<IAS15Integrator>());
+            else sim.setIntegrator(std::make_unique<VerletIntegrator>());
+            state.integratorRequested = -1;
+            baselineChange = ~0ull;
         }
         if (state.resetRequested) {
             loadPreset(sim.preset());

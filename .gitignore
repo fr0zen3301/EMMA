@@ -7,3 +7,6 @@ imgui.ini
 nbody
 *.o
 *.out
+
+# private docs
+docs
