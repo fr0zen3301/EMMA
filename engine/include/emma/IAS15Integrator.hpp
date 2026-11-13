@@ -30,6 +30,9 @@ public:
     }
     void forgetHistory() override { hasHistory = false; }
     const char* name() const override { return "IAS15"; }
+    // The tree's forces are approximate and shift a little each time it's rebuilt,
+    // which IAS15 reads as fast-changing motion and answers with very short pieces
+    bool needsExactForces() const override { return true; }
 
 private:
     // a(t) = a0 + b[0] t + b[1] t^2 + ... + b[6] t^7, with t running from 0 to 1 across the step

@@ -26,6 +26,7 @@ void Simulation::load(Preset preset, const SolarSnapshot* snapshot) {
 
     world.moveToBarycenter();
     integrator->bodiesChanged();
+    checkIntegrator();
     ++world.changes;
 }
 
@@ -39,6 +40,7 @@ void Simulation::clear() {
 void Simulation::addBody(double mass, const Vector2D& position, const Vector2D& velocity) {
     world.bodies.emplace_back(mass, position, velocity);
     integrator->bodiesChanged();  // Verlet needs the new body's acceleration before its first drift
+    checkIntegrator();            // one past DIRECT_LIMIT: Verlet takes over from IAS15
     ++world.changes;
 }
 
@@ -46,6 +48,16 @@ void Simulation::setIntegrator(std::unique_ptr<Integrator> next) {
     if (!next) return;            // keep the current one rather than run with none
     integrator = std::move(next);  // a unique_ptr can't be copied, only moved
     integrator->bodiesChanged();  // the new one has computed nothing for these bodies yet
+    checkIntegrator();
+}
+
+void Simulation::checkIntegrator() {
+    // Above DIRECT_LIMIT bodies the forces come from the Barnes-Hut tree. An integrator
+    // built for exact forces would cut its pieces very short there, so Verlet takes over
+    if (world.bodies.size() > DIRECT_LIMIT && integrator->needsExactForces()) {
+        integrator = std::make_unique<VerletIntegrator>();
+        integrator->bodiesChanged();
+    }
 }
 
 // Stepping

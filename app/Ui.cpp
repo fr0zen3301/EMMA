@@ -181,7 +181,11 @@ void drawSidebar(UiState& st, emma::Clock& clock, const Stats& stats, Preset pre
             st.integratorRequested = currentIntegrator;
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Velocity Verlet: fast, with a small energy wobble.\n"
-                              "IAS15: as accurate as a double allows but slower. Use Verlet above 64 bodies.");
+                              "IAS15: as accurate as a double allows but slower, for up to %zu bodies.",
+                              Simulation::DIRECT_LIMIT);
+        if (stats.bodies > Simulation::DIRECT_LIMIT)
+            hint(printf_string("Above %zu bodies EMMA uses Verlet: IAS15 is built for exact forces.",
+                               Simulation::DIRECT_LIMIT).c_str());
         if (ImGui::Button("Clear")) st.clearRequested = true;
         ImGui::SameLine();
         if (ImGui::Button("Reset")) st.resetRequested = true;

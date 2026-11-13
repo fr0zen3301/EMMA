@@ -11,15 +11,13 @@ This is the plan for turning EMMA from a simulator into an engine. The physics a
 - Time moved out of the app into `emma::Clock`: speed, pause, single steps and real time.
 - `Simulation` was split into parts that it now ties together: `World`, `Gravity`, `VerletIntegrator` and collisions.
 
+### Integrators: an interface and IAS15
+
+- `Integrator` is an interface, and `Simulation` talks only to it, so integrators can be swapped without changing the rest of the engine. `VerletIntegrator` is one implementation.
+- `IAS15Integrator` adds IAS15, which picks its own piece length and aims for errors near the rounding limit of a double. Through a close pass its energy error stays far smaller than Verlet's.
+- The sidebar switches between the two.
+
 ## Planned
-
-### An integrator interface
-
-`VerletIntegrator` becomes one implementation of an `Integrator` interface, so other integrators can be swapped in without changing the rest of the engine.
-
-### A higher-order integrator
-
-An integrator such as IAS15, for systems with many close passes. Velocity Verlet gets through a close pass by splitting the step into as many as 4,096 pieces, and a split step isn't symplectic, so each close pass leaves a small permanent offset in the energy drift.
 
 ### 3D
 

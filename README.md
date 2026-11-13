@@ -10,6 +10,7 @@ Everything runs in real units: distances in astronomical units (AU), masses in s
 - Add a body anywhere. A click places it. Pressing and dragging sets its speed and direction, and a dashed line shows where it will go before you let go.
 - Tick "Circular orbit" and a click puts the new body on a circular orbit around whatever dominates gravity at that spot. That is the Sun almost everywhere, and Earth when you click close to Earth.
 - Run in real time (one second per second, in step with your computer's clock) or at any speed from a few hours per second up to ten years per second. You can also pause, or step one frame at a time.
+- Pick the integrator: velocity Verlet, which is fast and keeps energy steady over the long run, or IAS15, which aims for errors near the rounding limit of a double.
 - Zoom from Neptune's orbit down to the Earth and Moon, and hover over any body to see its mass, radius, distance and speed.
 
 ## Controls
@@ -31,13 +32,13 @@ Speeds are measured relative to the body that dominates gravity where you click,
 
 The sidebar on the left has five sections:
 
-- Simulation sets how fast time runs and has a Real time box. The solar system starts in real time. This section also holds the Clear, Reset and Fit view buttons.
+- Simulation sets how fast time runs, has a Real time box and picks the integrator, velocity Verlet or IAS15. The solar system starts in real time, and Verlet is the default. Switching integrators starts the drift readout from a new baseline. This section also holds the Clear, Reset and Fit view buttons.
 - System switches between the solar system, Alpha Centauri and empty space, and says where the solar system's starting positions came from.
 - New body sets the mass, speed and direction of the next body you add. A swatch shows the color and class it will get, anywhere from a rocky body up to an O-type star.
 - View turns trails and labels on and off.
 - Stats shows the body count, the frame rate, and how far total energy and angular momentum have drifted, with a graph of the last 30 seconds.
 
-The status bar along the bottom shows how wide the view is, the cursor position in AU, the date and the size of the time step. In real time the date includes your local time of day; outside the solar system it shows the time elapsed instead. During a close pass the status bar also shows how many pieces the step was split into.
+The status bar along the bottom shows how wide the view is, the cursor position in AU, the date and the size of the time step. In real time the date includes your local time of day; outside the solar system it shows the time elapsed instead. When a step is split into pieces, the status bar also shows how many.
 
 ## The physics
 
@@ -57,22 +58,33 @@ Without a connection, EMMA starts from the last positions it saved. If it has ne
 
 ### Integration
 
-To move time forward, EMMA uses a method called velocity Verlet. Each step does four things:
+EMMA moves time forward in fixed steps. The base step is 0.1 day for the solar system (about 880 steps per orbit of Mercury) and 1 day for Alpha Centauri. When time runs slowly, the step shrinks to one frame's worth of time, 10 minutes at 10 hours per second, so bodies glide instead of jumping. In real time it shrinks to a fraction of a second.
+
+An integrator carries the bodies through each step, and the sidebar picks one of two: velocity Verlet, the default, or IAS15. Either one can split a step into as many as 4,096 smaller pieces. After every piece, EMMA merges any bodies that touched and records trail points. A body gets a new trail point each time its direction of travel has turned by 2°, so tight loops and wide orbits both draw as smooth curves.
+
+Each frame runs as many base steps as the chosen speed needs. If that would take too long, EMMA drops the backlog and shows "Running behind" instead of freezing the window.
+
+#### Velocity Verlet
+
+Each piece does three things:
 
 1. Drift: move every body by v·dt + ½·a·dt², using its velocity v and acceleration a.
 2. Work out the accelerations again at the new positions.
 3. Kick: update every velocity using the average of the old and new accelerations.
-4. Merge any bodies that touched during the step, then record trail points. A body gets a new trail point each time its direction of travel has turned by 2°, so tight loops and wide orbits both draw as smooth curves.
 
 Verlet is symplectic. In practice that means its energy error rises and falls around a fixed value and never builds up. With simpler methods such as Euler steps, the error builds up and planets slowly spiral away. EMMA works out a new body's acceleration before its first step, so new bodies get Verlet's full (second-order) accuracy from their very first step.
 
-The base step is 0.1 day for the solar system (about 880 steps per orbit of Mercury) and 1 day for Alpha Centauri. When time runs slowly, the step shrinks to one frame's worth of time, 10 minutes at 10 hours per second, so bodies glide instead of jumping. In real time it shrinks to a fraction of a second.
-
 Close passes need smaller steps. A single long step through a near miss would jump past the closest point and send the pair apart faster than it arrived, which looks like the bodies pushing each other away. So before each piece of a step, EMMA works out two times for every pair of bodies. One is the pair's dynamical time, √(r³ / G(m₁ + m₂)), which sets how quickly the two can swing around each other. The other is the time the pair needs to close the gap at its current speed. A piece can last at most 3% of the shortest of these times.
 
-Away from close passes, that rule allows the whole base step in one piece, so Verlet keeps its long-run energy behavior. During a close pass the step splits into as many as 4,096 pieces, and the status bar shows the count. Above 64 bodies, checking every pair would cost more than the forces themselves, so EMMA instead sizes the pieces from how fast each body's acceleration changed over the previous piece. The dashed predicted path uses the same rule.
+Away from close passes, that rule allows the whole base step in one piece, so Verlet keeps its long-run energy behavior. During a close pass the step splits into smaller pieces, and the status bar shows the count. Above 64 bodies, checking every pair would cost more than the forces themselves, so EMMA instead sizes the pieces from how fast each body's acceleration changed over the previous piece. The dashed predicted path always uses Verlet with this rule, whichever integrator moves the bodies.
 
-Each frame runs as many base steps as the chosen speed needs. If that would take too long, EMMA drops the backlog and shows "Running behind" instead of freezing the window.
+#### IAS15
+
+IAS15 (Rein & Spiegel 2015) is a 15th-order integrator that aims for errors near the rounding limit of a double. Over each piece it writes every body's acceleration as a polynomial in time. It works out the forces at the start of the piece and at seven moments spread across it (Gauss-Radau spacing), fits the polynomial to them, and repeats until the fit stops changing. Then it moves every body along the polynomial to the end of the piece.
+
+IAS15 picks its own piece length from the polynomial's highest term, which shows how quickly the forces are changing. When a piece turns out far too long, it redoes it shorter, and from one piece to the next it grows by at most four times. A piece never runs past the end of the base step. Each piece costs at least 8 force calculations instead of Verlet's one, so IAS15 is slower, but through a close pass its energy error stays far smaller than Verlet's.
+
+Above 64 bodies, EMMA switches from IAS15 to Verlet by itself, and the sidebar says so. IAS15 is built for exact forces, and the approximate ones from the Barnes-Hut tree (see Forces) would make it take far shorter pieces.
 
 ### Forces
 
@@ -105,7 +117,7 @@ At solar-system scale a planet is much smaller than a pixel, so every body is dr
 - The simulation is 2D. Orbits lie flat in the ecliptic plane and their tilts (inclinations) are dropped. The largest, Mercury's, is 7°.
 - Gravity is Newtonian. General relativity makes Mercury's orbit turn an extra 43 arcseconds per century (its perihelion precession), and EMMA leaves that out.
 - Today's positions from Horizons are flattened onto the ecliptic plane, which drops each planet's small distance above or below it. Offline, the planets start from mean Keplerian elements, good to a fraction of a degree around the year 2000.
-- A split step isn't symplectic, so each close pass leaves a small permanent offset in the energy drift. The planets and the Moon never need split steps.
+- With Verlet, a split step isn't symplectic, so each close pass leaves a small permanent offset in the energy drift. The planets and the Moon never need split steps. IAS15 isn't symplectic either, but its error through a close pass is far smaller.
 - Merges are perfectly inelastic (the two bodies stick together), so they lower the total energy. The drift readout starts from a new baseline whenever bodies are added, merged or loaded.
 
 ## Building
@@ -141,14 +153,17 @@ Release builds on Windows open without a console window. If the font is missing,
 
 The tests build along with EMMA and don't need SFML. They check that:
 
+- the offline start puts Earth where it was on 1 January 2000
 - Earth's orbit takes one sidereal year
 - energy and angular momentum stay conserved over ten simulated years
 - a close pass doesn't speed bodies up
 - a head-on collision keeps mass and momentum
+- IAS15 passes the same four checks, and holds energy and angular momentum to 1 part in 10¹⁰ over the ten years
+- IAS15 hands over to Verlet above 64 bodies
 - the Barnes-Hut tree matches an exact sum
 - each star of Alpha Centauri rules the space around it
 - trails stay smooth
-- the calendar and the Horizons parser read dates and replies correctly
+- the calendar reads dates correctly, and the Horizons code reads tables, JSON replies and error messages
 - the clock keeps the chosen speed, pauses and steps, and lands on the right moment in real time
 
 Run them from the project folder:
@@ -165,16 +180,18 @@ EMMA has two parts. The engine, in `engine/`, is built as the `emma_core` librar
 
 | File | Role |
 |------|------|
-| `Simulation.hpp` / `Simulation.cpp` | Ties the parts below together for the app: loading, stepping, adding bodies, and queries like the dominant body, circular velocity and the predicted path |
+| `Simulation.hpp` / `Simulation.cpp` | Ties the parts below together for the app: loading, stepping, adding bodies, switching integrators, and queries like the dominant body, circular velocity and the predicted path |
 | `World.hpp` / `World.cpp` | The bodies and where the system is in time, plus trails, kinetic energy and angular momentum |
 | `Gravity.hpp` / `Gravity.cpp` | The force: exact pairwise sum or Barnes-Hut, and the potential energy that matches it |
-| `Integrator.hpp` / `Integrator.cpp` | Velocity Verlet, split into pieces through close passes |
+| `Integrator.hpp` | The interface every integrator implements, so `Simulation` can swap them |
+| `VerletIntegrator.hpp` / `VerletIntegrator.cpp` | Velocity Verlet, split into pieces through close passes |
+| `IAS15Integrator.hpp` / `IAS15Integrator.cpp` | IAS15, which picks its own piece length and aims for errors near the rounding limit |
 | `Collisions.hpp` / `Collisions.cpp` | Swept contact checks and merges |
 | `Presets.hpp` / `Presets.cpp` | The solar system and Alpha Centauri, each built as a scenario: bodies plus settings |
 | `Clock.hpp` / `Clock.cpp` | Time: speed, pause, single steps, real time, and how many fixed steps each frame runs |
 | `Body.hpp` / `Body.cpp` | A single body, plus the mass-radius, temperature and color relations |
 | `QuadTree.hpp` / `QuadTree.cpp` | Barnes-Hut tree for systems above 64 bodies |
-| `Horizons.hpp` / `Horizons.cpp` | Today's positions from JPL Horizons: the requests, the parser and the cache |
+| `Horizons.hpp` / `Horizons.cpp` | Today's positions from JPL Horizons: the requests, the JSON replies and their error messages, the parser and the cache |
 | `Calendar.hpp` / `Calendar.cpp` | Julian days, calendar dates and local time |
 | `Constants.hpp` | Units and physical constants |
 | `Vector2D.hpp` | Header-only 2D vector |
@@ -205,3 +222,4 @@ EMMA has two parts. The engine, in `engine/`, is built as the `emma_core` librar
 - Radii and the Sun's temperature: IAU 2015 nominal values and the NASA planetary fact sheets.
 - Alpha Centauri: period and eccentricity from Pourbaix et al. (2002), masses from Akeson et al. (2021), radii from Kervella et al. (2017).
 - Mass-radius relation for planets and brown dwarfs: Chen & Kipping (2017), ApJ 834, 17.
+- IAS15: H. Rein & D. S. Spiegel (2015), MNRAS 446, 1424.

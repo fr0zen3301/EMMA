@@ -301,6 +301,24 @@ void testIas15HeadOnMerge() {
     headOnMerge(sim);
 }
 
+void testIas15Guard() {
+    // Above DIRECT_LIMIT bodies the tree's approximate forces would make IAS15 crawl,
+    // so Verlet takes over, and IAS15 can't be picked again until the count drops
+    Simulation sim;
+    sim.setIntegrator(std::make_unique<IAS15Integrator>());
+    sim.load(Preset::Empty);
+    for (std::size_t i = 0; i < Simulation::DIRECT_LIMIT; ++i)
+        sim.addBody(units::EARTH_MASS, Vector2D(static_cast<double>(i), 0.0), Vector2D());
+    CHECK(sim.getIntegrator().needsExactForces(), "IAS15 was dropped at %zu bodies", sim.getBodyCount());
+
+    sim.addBody(units::EARTH_MASS, Vector2D(-1.0, 0.0), Vector2D());
+    CHECK(!sim.getIntegrator().needsExactForces(), "IAS15 still runs with %zu bodies", sim.getBodyCount());
+
+    sim.setIntegrator(std::make_unique<IAS15Integrator>());
+    CHECK(!sim.getIntegrator().needsExactForces(), "IAS15 could be picked again with %zu bodies",
+          sim.getBodyCount());
+}
+
 void testBarnesHut() {
     // The tree against an exact sum over 300 random bodies. With an opening angle
     // of 0 the tree never approximates, so it must match to rounding
@@ -453,6 +471,7 @@ const Test TESTS[] = {
     {"ias15_conservation", testIas15Conservation},
     {"ias15_close_pass", testIas15ClosePass},
     {"ias15_head_on_merge", testIas15HeadOnMerge},
+    {"ias15_guard", testIas15Guard},
 };
 
 }

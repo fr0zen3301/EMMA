@@ -39,8 +39,10 @@ Clock::Report Clock::run(Simulation& sim, double realSeconds, double nowJulianDa
     while (owed >= sim.timeStep()) {
         sim.step();
         owed -= sim.timeStep();
-        if (++report.steps % 32 == 0 &&
-            std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count() > BUDGET) {
+        ++report.steps;
+        // Checked after every step: a single step can take long (a close pass split into
+        // thousands of pieces, IAS15, many bodies), and reading the clock costs far less
+        if (std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count() > BUDGET) {
             // Drop the backlog instead of freezing the window. Real time works out
             // what's owed from the clock again next frame, so nothing is lost there
             report.behind = !live;

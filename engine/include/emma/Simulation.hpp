@@ -44,7 +44,8 @@ public:
 
     void addBody(double mass, const Vector2D& position, const Vector2D& velocity);
 
-    // Swaps the integrator. The new one starts knowing nothing about the bodies
+    // Swaps the integrator. The new one starts knowing nothing about the bodies.
+    // Above DIRECT_LIMIT bodies, one that needs exact forces (IAS15) gives way to Verlet
     void setIntegrator(std::unique_ptr<Integrator> next);
     const Integrator& getIntegrator() const { return *integrator; }
 
@@ -76,6 +77,7 @@ public:
 
 private:
     int strongestPull(const Vector2D& p, int exclude) const;
+    void checkIntegrator();  // Verlet takes over from IAS15 above DIRECT_LIMIT bodies
 
     World world;
     Gravity gravity;

@@ -21,6 +21,10 @@ public:
     virtual void forgetHistory() = 0;
 
     virtual const char* name() const = 0;
+
+    // True for an integrator built for exact forces. Above Gravity::DIRECT_LIMIT bodies,
+    // where the forces come from the Barnes-Hut tree, Simulation swaps it for Verlet
+    virtual bool needsExactForces() const { return false; }
 };
 
 }
