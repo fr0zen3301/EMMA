@@ -29,7 +29,7 @@ void World::recordTrails() {
         if (speed <= 0.0) continue;
         const Vector3D heading = b.velocity / speed;
         if (!b.trail.empty() && heading.dot(b.trailHeading) > cosTurn) continue;
-        b.trail.push_back(b.position);
+        b.trail.push_back(TrailPoint{b.position, time});
         if (b.trail.size() > MAX_TRAIL) b.trail.pop_front();
         b.trailHeading = heading;
     }

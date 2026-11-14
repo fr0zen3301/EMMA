@@ -5,6 +5,7 @@
 #include "emma/Calendar.hpp"
 #include "emma/Clock.hpp"
 #include "emma/Constants.hpp"
+#include "emma/Galaxy.hpp"
 #include "emma/Horizons.hpp"
 #include "emma/IAS15Integrator.hpp"
 #include "emma/Octree.hpp"
@@ -424,13 +425,17 @@ void testTrailSmoothness() {
     double worst = 0.0;
     const auto& t = planet.trail;
     for (std::size_t k = 2; k < t.size(); ++k) {
-        const Vector3D d1 = t[k - 1] - t[k - 2], d2 = t[k] - t[k - 1];
+        const Vector3D d1 = t[k - 1].position - t[k - 2].position, d2 = t[k].position - t[k - 1].position;
         const double c = d1.dot(d2) / (d1.magnitude() * d2.magnitude());
         worst = std::max(worst, std::acos(std::clamp(c, -1.0, 1.0)) / units::DEG);
     }
     std::printf("  trail: %zu points, sharpest bend %.2f deg\n", t.size(), worst);
     CHECK(t.size() > 100, "only %zu trail points in two orbits", t.size());
     CHECK(worst < 5.0, "the trail bends by %.1f deg at one point, it will look jagged", worst);
+
+    bool ordered = true;
+    for (std::size_t k = 1; k < t.size(); ++k) ordered = ordered && t[k].time > t[k - 1].time;
+    CHECK(ordered && t.back().time <= sim.time(), "trail times run out of order or past the clock");
 }
 
 void testClock() {
@@ -495,6 +500,39 @@ void testInclination() {
     CHECK(std::abs(later - 7.00498) < 0.01, "Mercury's orbit tilted to %.5f deg in 10 years", later);
 }
 
+void testGalacticFrame() {
+    const galaxy::Rotation& r = galaxy::eclipticToGalactic();
+    double worst = 0.0;
+    for (int i = 0; i < 3; ++i) {
+        for (int j = 0; j < 3; ++j) {
+            const double dot = r.m[i][0] * r.m[j][0] + r.m[i][1] * r.m[j][1] + r.m[i][2] * r.m[j][2];
+            worst = std::max(worst, std::abs(dot - (i == j ? 1.0 : 0.0)));
+        }
+    }
+    CHECK(worst < 1e-9, "the ecliptic to Galactic matrix isn't a rotation: off by %.2e", worst);
+
+    const double ra = 192.85948 * units::DEG, dec = 27.12825 * units::DEG;
+    const Vector3D poleEquatorial(std::cos(dec) * std::cos(ra), std::cos(dec) * std::sin(ra), std::sin(dec));
+    const Vector3D pole = galaxy::fromEcliptic(galaxy::equatorialToEcliptic(poleEquatorial));
+    CHECK((pole - Vector3D(0.0, 0.0, 1.0)).magnitude() < 1e-8, "the north Galactic pole lands at %.9f, %.9f, %.9f",
+          pole.x, pole.y, pole.z);
+
+    const Vector3D eclipticPole = galaxy::fromEcliptic(Vector3D(0.0, 0.0, 1.0));
+    const double l = std::atan2(eclipticPole.y, eclipticPole.x) / units::DEG;
+    const double b = std::asin(eclipticPole.z) / units::DEG;
+    std::printf("  north ecliptic pole at l = %.3f, b = %.3f deg\n", l, b);
+    CHECK(std::abs(l - 96.38) < 0.02 && std::abs(b - 29.81) < 0.02, "north ecliptic pole at l %.3f, b %.3f", l, b);
+
+    const Vector3D v(0.3, -1.7, 2.9);
+    CHECK((galaxy::toEcliptic(galaxy::fromEcliptic(v)) - v).magnitude() < 1e-12, "there and back moved the point");
+
+    const Vector3D heading = galaxy::toEcliptic(galaxy::sunVelocityKms().normalized());
+    const double tilt = std::asin(heading.z) / units::DEG;
+    std::printf("  the Sun heads %.2f deg out of the ecliptic plane at %.1f km/s\n", tilt,
+                galaxy::sunVelocityKms().magnitude());
+    CHECK(tilt > 60.0 && tilt < 61.2, "the Sun heads %.2f deg out of the ecliptic, expected about 60.6", tilt);
+}
+
 struct Test {
     const char* name;
     void (*run)();
@@ -520,6 +558,7 @@ const Test TESTS[] = {
     {"ias15_guard", testIas15Guard},
     {"crowded_close_pass", testCrowdedClosePass},
     {"inclination", testInclination},
+    {"galactic_frame", testGalacticFrame},
 };
 
 }

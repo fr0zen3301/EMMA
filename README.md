@@ -11,7 +11,8 @@ Everything runs in real units: distances in astronomical units (AU), masses in s
 - Tick "Circular orbit" and a click puts the new body on a circular orbit around whatever dominates gravity at that spot. That is the Sun almost everywhere, and Earth when you click close to Earth.
 - Run in real time (one second per second, in step with your computer's clock) or at any speed from a few hours per second up to ten years per second. You can also pause, or step one frame at a time.
 - Pick the integrator: velocity Verlet, which is fast and keeps energy steady over the long run, or IAS15, which aims for errors near the rounding limit of a double.
-- Zoom from Neptune's orbit down to the Earth and Moon, and hover over any body to see its mass, radius, distance and speed.
+- Zoom from Neptune's orbit down to the Earth and Moon, turn the view to see how the orbits tilt, follow any planet, and hover over any body to see its mass, radius, distance and speed.
+- Switch on the galaxy view to watch the planets trace stretched helices as the solar system moves through the Milky Way at 247 km/s, or slow the Sun down until their paths start to loop.
 
 ## Controls
 
@@ -20,11 +21,13 @@ Everything runs in real units: distances in astronomical units (AU), masses in s
 | Left click | Place a body with the sidebar's settings |
 | Left drag | Launch a body: the arrow's length is the speed and its angle the direction |
 | Esc | Cancel a launch |
-| Right or middle drag | Pan |
+| Right drag | Turn the view around the point it looks at |
+| Shift + right drag, or middle drag | Pan |
 | Scroll | Zoom toward the cursor |
 | Space | Pause or resume |
 | N | Step one frame |
 | F | Fit the view to the current system |
+| T | Look straight down on the ecliptic |
 
 Speeds are measured relative to the body that dominates gravity where you click, so a launch next to Earth moves along with Earth.
 
@@ -35,10 +38,10 @@ The sidebar on the left has five sections:
 - Simulation sets how fast time runs, has a Real time box and picks the integrator, velocity Verlet or IAS15. The solar system starts in real time, and Verlet is the default. Switching integrators starts the drift readout from a new baseline. This section also holds the Clear, Reset and Fit view buttons.
 - System switches between the solar system, Alpha Centauri and empty space, and says where the solar system's starting positions came from.
 - New body sets the mass, speed and direction of the next body you add. A swatch shows the color and class it will get, anywhere from a rocky body up to an O-type star.
-- View turns trails and labels on and off.
+- View turns trails, labels and the grid on and off, has a Top view button, and picks a named body for the camera to follow. For the solar system it also has the galaxy view, with a slider for the Sun's speed and how far the Sun has moved.
 - Stats shows the body count, the frame rate, and how far total energy and angular momentum have drifted, with a graph of the last 30 seconds.
 
-The status bar along the bottom shows how wide the view is, the cursor position in AU, the date and the size of the time step. In real time the date includes your local time of day; outside the solar system it shows the time elapsed instead. When a step is split into pieces, the status bar also shows how many.
+The status bar along the bottom shows how wide the view is at the point the camera looks at, the cursor's position on the grid in AU, the date and the size of the time step. In real time the date includes your local time of day; outside the solar system it shows the time elapsed instead. When a step is split into pieces, the status bar also shows how many.
 
 ## The physics
 
@@ -92,6 +95,12 @@ Up to 64 bodies, EMMA adds up the pull between every pair directly, once per pai
 
 Gravity is softened very slightly (Plummer softening, with a length of 10⁻⁷ AU, about 15 km). That is smaller than any body's radius, so in practice the force is plain Newtonian gravity, and the softening only keeps the force from dividing by zero when two bodies sit at the same point. The energy readout uses the potential energy that goes with exactly this softened force.
 
+### The galaxy view
+
+The simulation always runs around the solar system's barycenter, which stays at rest. The galaxy view changes only the picture. It turns everything from ecliptic coordinates into Galactic coordinates, where the grid is the plane of the Milky Way, and slides each point along the Sun's path by the Sun's velocity times the moment the point was recorded. That is why every trail point carries a time. Newton's laws don't change when the whole system moves at a steady speed, so this is the same motion seen from the Galaxy's frame.
+
+The Sun moves at 247 km/s around the Galactic center, plus a small drift toward the center and out of the plane, about 52 AU a year. Its path points about 61° out of the plane of the planets' orbits, so at the real speed every planet traces a long, stretched helix. A path only loops when the planet's own speed is larger than the part of the Sun's velocity that lies in its orbital plane, about half of it. The slider lets you lower the Sun's speed to see that.
+
 ### Collisions
 
 Bodies merge when their surfaces touch. The check follows each pair along the path both moved during the step, so a fast body can't jump through another between two steps. To keep this quick, EMMA first sorts the bodies along the x axis and only runs the exact check on pairs whose paths overlap there. A merge keeps the total mass and momentum, places the new body at the pair's center of mass, and shows a short ring. The heavier body keeps its name and color.
@@ -110,13 +119,14 @@ Bodies from the presets use their measured radius and color. A body you add gets
 
 The planet and brown dwarf radii follow Chen & Kipping (2017). A star's surface temperature comes from the main-sequence mass-luminosity relation and the Stefan-Boltzmann law, and its color is that of a blackbody (an ideal glowing object) at that temperature. A 0.1 M☉ red dwarf comes out near 2,700 K and orange-red, the Sun at 5,772 K and nearly white, and a 10 M☉ star near 24,000 K and blue. The sidebar and tooltips name the spectral type.
 
-At solar-system scale a planet is much smaller than a pixel, so every body is drawn at least as large as a marker that grows with the logarithm of its mass. Zoom in far enough and the true size takes over. The background stars stay fixed while you pan, as real stars would at their distance.
+At solar-system scale a planet is much smaller than a pixel, so every body is drawn at least as large as a marker that grows with the logarithm of its mass. Zoom in far enough and the true size takes over. The background stars turn with the view but stay put while you pan and zoom, as real stars would at their distance.
 
 ## Accuracy and limits
 
-- The physics is 3D, but the view isn't yet. The camera looks straight down on the ecliptic plane, so the tilts of the orbits don't show on screen, and a body you add starts in that plane, moving along it.
+- A body you add starts on the grid, the plane parallel to the ecliptic through the point the camera looks at, and its launch velocity lies in that plane. When you look at the grid edge-on there is nothing to click on, so turn the view first.
 - Gravity is Newtonian. General relativity makes Mercury's orbit turn an extra 43 arcseconds per century (its perihelion precession), and EMMA leaves that out.
 - Offline, the planets start from mean Keplerian elements, good to a fraction of a degree around the year 2000.
+- The galaxy view moves the Sun in a straight line. Its real path curves around the Galactic center once every 200 million years or so, which over 10,000 simulated years bends it by about 80 AU out of more than 500,000. Bodies can't be added in the galaxy view.
 - With Verlet, a split step isn't symplectic, so each close pass leaves a small permanent offset in the energy drift. The planets and the Moon never need split steps. IAS15 isn't symplectic either, but its error through a close pass is far smaller.
 - Merges are perfectly inelastic (the two bodies stick together), so they lower the total energy. The drift readout starts from a new baseline whenever bodies are added, merged or loaded.
 
@@ -164,7 +174,8 @@ The tests build along with EMMA and don't need SFML. They check that:
 - above 64 bodies, a close pass right after bodies are added still splits the step
 - the Barnes-Hut tree matches an exact sum
 - each star of Alpha Centauri rules the space around it
-- trails stay smooth
+- trails stay smooth, and their points keep their times in order
+- the ecliptic to Galactic rotation is a true rotation, sends the north Galactic pole to straight up and the north ecliptic pole to l = 96.38°, b = 29.81°, and points the Sun's motion about 61° out of the ecliptic
 - the calendar reads dates correctly, and the Horizons code reads tables, JSON replies and error messages
 - the clock keeps the chosen speed, pauses and steps, and lands on the right moment in real time
 
@@ -193,6 +204,7 @@ EMMA has two parts. The engine, in `engine/`, is built as the `emma_core` librar
 | `Clock.hpp` / `Clock.cpp` | Time: speed, pause, single steps, real time, and how many fixed steps each frame runs |
 | `Body.hpp` / `Body.cpp` | A single body, plus the mass-radius, temperature and color relations |
 | `Octree.hpp` / `Octree.cpp` | Barnes-Hut tree for systems above 64 bodies |
+| `Galaxy.hpp` | The Galactic frame: the ecliptic to Galactic rotation and the Sun's velocity around the Galactic center |
 | `Horizons.hpp` / `Horizons.cpp` | Today's positions from JPL Horizons: the requests, the JSON replies and their error messages, the parser and the cache |
 | `Calendar.hpp` / `Calendar.cpp` | Julian days, calendar dates and local time |
 | `Constants.hpp` | Units and physical constants |
@@ -203,9 +215,10 @@ EMMA has two parts. The engine, in `engine/`, is built as the `emma_core` librar
 
 | File | Role |
 |------|------|
-| `app/main.cpp` | Window, event loop, input (click, drag-launch, pan, zoom), the drift readout and the background Horizons download |
-| `app/Camera.hpp` | Converts between AU and pixels, with zoom and pan |
-| `app/Renderer.hpp` / `Renderer.cpp` | Starfield, trails, bodies, merge rings, predicted path and launch arrow |
+| `app/main.cpp` | Window, event loop, input (click, drag-launch, turn, pan, zoom, follow), the drift readout and the background Horizons download |
+| `app/Camera.hpp` | Orbit camera: projects AU onto pixels with perspective and picks points on the grid under the cursor, with turn, pan and zoom |
+| `app/SceneFrame.hpp` | Places simulation points in the picture: as they are, or in Galactic coordinates moving with the Sun |
+| `app/Renderer.hpp` / `Renderer.cpp` | Starfield with the Milky Way, grid, trails, bodies, merge rings, predicted path, launch arrow and the Sun's heading |
 | `app/Ui.hpp` / `Ui.cpp` | Sidebar, status bar, labels, tooltips and the color theme |
 
 ### Build and tests
@@ -225,3 +238,6 @@ EMMA has two parts. The engine, in `engine/`, is built as the `emma_core` librar
 - Alpha Centauri: period and eccentricity from Pourbaix et al. (2002), masses from Akeson et al. (2021), radii from Kervella et al. (2017).
 - Mass-radius relation for planets and brown dwarfs: Chen & Kipping (2017), ApJ 834, 17.
 - IAS15: H. Rein & D. S. Spiegel (2015), MNRAS 446, 1424.
+- Galactic coordinates: the ICRS to Galactic matrix from *The Hipparcos and Tycho Catalogues* (ESA 1997), vol. 1, p. 92, and the J2000 obliquity of 84,381.448 arcseconds.
+- The Sun's speed around the Galactic center, 247 km/s: M. J. Reid et al. (2019), ApJ 885, 131.
+- The Sun's drift toward the Galactic center and the north Galactic pole, 11.1 and 7.25 km/s: R. Schönrich, J. Binney & W. Dehnen (2010), MNRAS 403, 1829.

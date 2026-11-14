@@ -95,6 +95,7 @@ add_executable(physics_tests tests/physics_tests.cpp)
 target_link_libraries(physics_tests PRIVATE emma_core)
 foreach(test calendar horizons_parse horizons_reply j2000_start earth_year conservation close_pass head_on_merge
              barnes_hut dominant_body trail_smoothness clock ias15_earth_year ias15_conservation
-             ias15_close_pass ias15_head_on_merge ias15_guard crowded_close_pass inclination)
+             ias15_close_pass ias15_head_on_merge ias15_guard crowded_close_pass inclination
+             galactic_frame)
     add_test(NAME ${test} COMMAND physics_tests ${test})
 endforeach()

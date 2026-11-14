@@ -1,5 +1,6 @@
 #pragma once
 #include "Camera.hpp"
+#include "SceneFrame.hpp"
 #include "emma/Body.hpp"
 #include "emma/Clock.hpp"
 #include "emma/Simulation.hpp"
@@ -17,10 +18,15 @@ struct UiState {
     bool showPath = true;
     bool showTrails = true;
     bool showLabels = true;
+    bool showGrid = true;
+    std::string follow;           // the named body the camera follows, empty for none
+    bool galaxyView = false;      // draw the solar system moving through the Galaxy
+    float sunSpeedKms = static_cast<float>(emma::galaxy::sunVelocityKms().magnitude());  // its speed there
 
     bool clearRequested = false;
     bool resetRequested = false;
     bool resetViewRequested = false;
+    bool topViewRequested = false;
     int presetRequested = -1;
     int integratorRequested = -1;
     bool retryFetchRequested = false;
@@ -35,6 +41,7 @@ struct Stats {
     bool behind = false;         // the physics couldn't keep up with the chosen speed
     std::string sourceNote;      // where the solar system's starting positions came from
     bool canRetry = false;       // the Horizons download failed, try again
+    double sunTravelled = 0.0;   // AU the Sun has moved through the Galaxy since time 0, at the chosen speed
 };
 
 namespace ui {
@@ -42,12 +49,14 @@ namespace ui {
 void applyTheme();
 void loadFont(const std::filesystem::path& exeDir);
 
-void drawSidebar(UiState& state, emma::Clock& clock, const Stats& stats, emma::Preset preset, const char* integratorName, float width,
-                 float height);
-void drawStatusBar(const emma::Simulation& sim, const Camera& camera, sf::Vector2f mouse, const emma::Clock& clock,
-                   float y, float width, float height);
-void drawLabels(const Camera& camera, const std::vector<emma::Body>& bodies);
-void drawBodyTooltip(const emma::Simulation& sim, const Camera& camera, sf::Vector2f mouse);
+void drawSidebar(UiState& state, emma::Clock& clock, const Stats& stats, emma::Preset preset,
+                 const std::vector<emma::Body>& bodies, const char* integratorName, float width, float height);
+void drawStatusBar(const emma::Simulation& sim, const Camera& camera, const SceneFrame& frame, sf::Vector2f mouse,
+                   const emma::Clock& clock, float y, float width, float height);
+void drawLabels(const Camera& camera, const SceneFrame& frame, const std::vector<emma::Body>& bodies);
+void drawBodyTooltip(const emma::Simulation& sim, const Camera& camera, const SceneFrame& frame, sf::Vector2f mouse);
+// A small muted label next to a point in scene coordinates
+void drawTag(const Camera& camera, const emma::Vector3D& at, const char* text);
 void drawLaunchReadout(sf::Vector2f at, double speedKms, double angleRad);
 
 std::string formatMass(double massSolar);

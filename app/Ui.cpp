@@ -137,7 +137,8 @@ void loadFont(const std::filesystem::path& exeDir) {
     std::cerr << "EMMA: fonts/font.otf not found, using ImGui's built-in font\n";
 }
 
-void drawSidebar(UiState& st, emma::Clock& clock, const Stats& stats, Preset preset, const char* integratorName, float width, float height) {
+void drawSidebar(UiState& st, emma::Clock& clock, const Stats& stats, Preset preset, const std::vector<Body>& bodies,
+                 const char* integratorName, float width, float height) {
     ImGui::SetNextWindowPos(ImVec2(0.f, 0.f));
     ImGui::SetNextWindowSize(ImVec2(width, height));
     const ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
@@ -251,7 +252,37 @@ void drawSidebar(UiState& st, emma::Clock& clock, const Stats& stats, Preset pre
         ImGui::Checkbox("Trails", &st.showTrails);
         ImGui::SameLine(style.WindowPadding.x + LABEL_WIDTH + 20.f);
         ImGui::Checkbox("Labels", &st.showLabels);
-        hint("Scroll to zoom, right-drag to pan, F to fit. Space pauses, N steps, Esc cancels a launch.");
+        ImGui::Checkbox("Grid", &st.showGrid);
+        ImGui::SameLine(style.WindowPadding.x + LABEL_WIDTH + 20.f);
+        if (ImGui::Button("Top view")) st.topViewRequested = true;
+        rowLabel("Follow");
+        ImGui::SetNextItemWidth(-1.f);
+        if (ImGui::BeginCombo("##follow", st.follow.empty() ? "Nothing" : st.follow.c_str())) {
+            if (ImGui::Selectable("Nothing", st.follow.empty())) st.follow.clear();
+            for (const Body& b : bodies) {
+                if (b.isNamed() && ImGui::Selectable(b.name.c_str(), st.follow == b.name)) st.follow = b.name;
+            }
+            ImGui::EndCombo();
+        }
+        if (preset == Preset::SolarSystem) {
+            ImGui::Checkbox("Galaxy view", &st.galaxyView);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Turn the picture into Galactic coordinates and carry it along the Sun's path "
+                                  "around the Galaxy. The physics doesn't change");
+            if (st.galaxyView) {
+                const float real = static_cast<float>(galaxy::sunVelocityKms().magnitude());
+                rowLabel("Sun speed");
+                ImGui::SetNextItemWidth(-56.f);
+                ImGui::SliderFloat("##sunspeed", &st.sunSpeedKms, 0.f, 300.f, "%.0f km/s");
+                ImGui::SameLine();
+                if (ImGui::Button("Real")) st.sunSpeedKms = real;
+                hint(printf_string("The Sun has moved %s since the start. Its real speed is %.0f km/s.",
+                                   formatDistance(stats.sunTravelled).c_str(), static_cast<double>(real))
+                         .c_str());
+            }
+        }
+        hint("Scroll to zoom, right-drag to turn the view, Shift+right-drag or middle-drag to pan. "
+             "F fits, T looks straight down. Space pauses, N steps, Esc cancels a launch.");
     }
 
     if (ImGui::CollapsingHeader("Stats", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -280,8 +311,8 @@ void drawSidebar(UiState& st, emma::Clock& clock, const Stats& stats, Preset pre
     ImGui::End();
 }
 
-void drawStatusBar(const Simulation& sim, const Camera& camera, sf::Vector2f mouse, const emma::Clock& clock,
-                   float y, float width, float height) {
+void drawStatusBar(const Simulation& sim, const Camera& camera, const SceneFrame& frame, sf::Vector2f mouse,
+                   const emma::Clock& clock, float y, float width, float height) {
     ImGui::SetNextWindowPos(ImVec2(0.f, y));
     ImGui::SetNextWindowSize(ImVec2(width, height));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(12.f, 5.f));
@@ -290,12 +321,13 @@ void drawStatusBar(const Simulation& sim, const Camera& camera, sf::Vector2f mou
                      ImGuiWindowFlags_NoBringToFrontOnFocus);
     ImGui::PopStyleVar();
 
-    const double viewWidth = camera.viewport.size.x / camera.pxPerAU;
+    const double viewWidth = camera.viewport.size.x / camera.pxPerAU();
     ImGui::TextDisabled("View %s across", formatDistance(viewWidth).c_str());
-    if (camera.viewport.contains(mouse)) {
-        const Vector3D w = camera.toWorld(mouse);
-        ImGui::SameLine(0.f, 28.f);
-        ImGui::TextDisabled("Cursor %.4f, %.4f AU", w.x, w.y);
+    if (camera.viewport.contains(mouse) && !frame.galactic) {
+        if (const std::optional<Vector3D> w = camera.pick(mouse)) {
+            ImGui::SameLine(0.f, 28.f);
+            ImGui::TextDisabled("Cursor %.4f, %.4f AU", w->x, w->y);
+        }
     }
     ImGui::SameLine(0.f, 28.f);
     if (sim.hasCalendar() && clock.live)
@@ -319,21 +351,24 @@ void drawStatusBar(const Simulation& sim, const Camera& camera, sf::Vector2f mou
     ImGui::End();
 }
 
-void drawLabels(const Camera& camera, const std::vector<Body>& bodies) {
+void drawLabels(const Camera& camera, const SceneFrame& frame, const std::vector<Body>& bodies) {
     ImDrawList* dl = ImGui::GetBackgroundDrawList();
     const ImU32 color = ImGui::GetColorU32(ImVec4(0.78f, 0.78f, 0.84f, 0.85f));
     for (const Body& b : bodies) {
         if (!b.isNamed()) continue;
-        const sf::Vector2f p = camera.toScreen(b.position);
-        if (!camera.viewport.contains(p)) continue;
+        const Vector3D at = frame.place(b.position);
+        const std::optional<sf::Vector2f> p = camera.toScreen(at);
+        if (!p || !camera.viewport.contains(*p)) continue;
 
         // Skip the label while a heavier named body covers this one (the Moon at solar-system zoom)
         bool covered = false;
         for (const Body& o : bodies) {
             if (&o == &b || !o.isNamed() || o.mass <= b.mass) continue;
-            const sf::Vector2f q = camera.toScreen(o.position);
-            const float reach = Renderer::screenRadius(o.mass, o.radius, camera.pxPerAU) + 8.f;
-            const float dx = q.x - p.x, dy = q.y - p.y;
+            const Vector3D other = frame.place(o.position);
+            const std::optional<sf::Vector2f> q = camera.toScreen(other);
+            if (!q) continue;
+            const float reach = Renderer::screenRadius(o.mass, o.radius, camera.pxPerAUAt(other)) + 8.f;
+            const float dx = q->x - p->x, dy = q->y - p->y;
             if (dx * dx + dy * dy < reach * reach) {
                 covered = true;
                 break;
@@ -341,19 +376,28 @@ void drawLabels(const Camera& camera, const std::vector<Body>& bodies) {
         }
         if (covered) continue;
 
-        const float r = Renderer::screenRadius(b.mass, b.radius, camera.pxPerAU);
-        dl->AddText(ImVec2(p.x + r + 4.f, p.y - r - 14.f), color, b.name.c_str());
+        const float r = Renderer::screenRadius(b.mass, b.radius, camera.pxPerAUAt(at));
+        dl->AddText(ImVec2(p->x + r + 4.f, p->y - r - 14.f), color, b.name.c_str());
     }
 }
 
-void drawBodyTooltip(const Simulation& sim, const Camera& camera, sf::Vector2f mouse) {
+void drawTag(const Camera& camera, const Vector3D& at, const char* text) {
+    const std::optional<sf::Vector2f> p = camera.toScreen(at);
+    if (!p || !camera.viewport.contains(*p)) return;
+    ImGui::GetBackgroundDrawList()->AddText(ImVec2(p->x + 6.f, p->y - 8.f), ImGui::GetColorU32(MUTED), text);
+}
+
+void drawBodyTooltip(const Simulation& sim, const Camera& camera, const SceneFrame& frame, sf::Vector2f mouse) {
     const std::vector<Body>& bodies = sim.getBodies();
     int hit = -1;
     float best = 1e30f;
     for (std::size_t i = 0; i < bodies.size(); ++i) {
-        const sf::Vector2f p = camera.toScreen(bodies[i].position);
-        const float r = std::max(Renderer::screenRadius(bodies[i].mass, bodies[i].radius, camera.pxPerAU), 6.f);
-        const float dx = p.x - mouse.x, dy = p.y - mouse.y, d2 = dx * dx + dy * dy;
+        const Vector3D at = frame.place(bodies[i].position);
+        const std::optional<sf::Vector2f> p = camera.toScreen(at);
+        if (!p) continue;
+        const float r =
+            std::max(Renderer::screenRadius(bodies[i].mass, bodies[i].radius, camera.pxPerAUAt(at)), 6.f);
+        const float dx = p->x - mouse.x, dy = p->y - mouse.y, d2 = dx * dx + dy * dy;
         if (d2 <= r * r && d2 < best) {
             best = d2;
             hit = static_cast<int>(i);

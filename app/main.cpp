@@ -1,9 +1,11 @@
 #include "Camera.hpp"
 #include "Renderer.hpp"
+#include "SceneFrame.hpp"
 #include "Ui.hpp"
 #include "emma/Calendar.hpp"
 #include "emma/Clock.hpp"
 #include "emma/Constants.hpp"
+#include "emma/Galaxy.hpp"
 #include "emma/Horizons.hpp"
 #include "emma/Simulation.hpp"
 #include "imgui.h"
@@ -32,6 +34,7 @@ constexpr std::size_t DRIFT_HISTORY = 120;  // 30 seconds of samples
 constexpr double KMS_PER_PIXEL = 0.25;      // drag-launch scale: 4 px of drag per km/s
 constexpr double MAX_LAUNCH_KMS = 200.0;
 constexpr float CLICK_SLOP = 4.f;           // px a press can move and still count as a click
+constexpr double ORBIT_RATE = 0.005;        // radians the view turns per px of right-drag
 const sf::Color ARROW_COLOR(217, 207, 255);
 } // namespace
 
@@ -54,6 +57,8 @@ int main(int argc, char** argv) {
     Simulation sim;
     Renderer renderer;
     Camera camera;
+    SceneFrame frame;
+    bool wasGalactic = false;
     UiState state;
     emma::Clock clock;
 
@@ -109,8 +114,8 @@ int main(int argc, char** argv) {
         startFetch();
 
     // Input state
-    bool pressing = false, dragging = false, panning = false;
-    sf::Vector2f pressAt, mouse, lastPan;
+    bool pressing = false, dragging = false, panning = false, orbiting = false;
+    sf::Vector2f pressAt, mouse, lastDrag;
     float zoomVelocity = 0.f;
 
     // Timing and diagnostics
@@ -125,11 +130,16 @@ int main(int argc, char** argv) {
     auto inViewport = [&](sf::Vector2f p) {
         return camera.viewport.contains(p) && !ImGui::GetIO().WantCaptureMouse;
     };
-    // Drag from the press point -> launch speed (km/s) and direction (radians, world frame)
+    // Drag from the press point -> launch speed (km/s) and direction (radians, world frame).
+    // The direction is the one the drag covers on the grid
     auto dragLaunch = [&](sf::Vector2f to, double& speedKms, double& angle) {
         const sf::Vector2f d = to - pressAt;
         speedKms = std::min(MAX_LAUNCH_KMS, std::hypot(static_cast<double>(d.x), static_cast<double>(d.y)) * KMS_PER_PIXEL);
-        angle = std::atan2(-static_cast<double>(d.y), static_cast<double>(d.x));  // screen y is down
+        const std::optional<Vector3D> from = camera.pick(pressAt), toward = camera.pick(to);
+        if (from && toward && (toward->x != from->x || toward->y != from->y))
+            angle = std::atan2(toward->y - from->y, toward->x - from->x);
+        else
+            angle = std::atan2(-static_cast<double>(d.y), static_cast<double>(d.x)) + camera.yaw();  // screen y is down
     };
     // Launch velocity in the inertial frame. Speed and direction are relative to the
     // body that dominates gravity at the spawn point, so a launch near Earth moves with Earth
@@ -162,27 +172,36 @@ int main(int argc, char** argv) {
                     pressAt = at;
                 } else if (press->button == sf::Mouse::Button::Right ||
                            press->button == sf::Mouse::Button::Middle) {
-                    panning = true;
-                    lastPan = at;
+                    const bool shift = sf::Keyboard::isKeyPressed(sf::Keyboard::Key::LShift) ||
+                                       sf::Keyboard::isKeyPressed(sf::Keyboard::Key::RShift);
+                    if (press->button == sf::Mouse::Button::Middle || shift) panning = true;
+                    else orbiting = true;
+                    lastDrag = at;
                 }
             } else if (const auto* release = event->getIf<sf::Event::MouseButtonReleased>()) {
                 if (release->button == sf::Mouse::Button::Left) {
-                    if (pressing) {
-                        const Vector3D at = camera.toWorld(pressAt);
-                        double speed = state.speedKms, angle = state.angle;
-                        if (dragging) dragLaunch(sf::Vector2f(release->position), speed, angle);
-                        sim.addBody(spawnMass(), at, launchVelocity(at, speed, angle));
+                    if (pressing && !frame.galactic) {
+                        if (const std::optional<Vector3D> at = camera.pick(pressAt)) {
+                            double speed = state.speedKms, angle = state.angle;
+                            if (dragging) dragLaunch(sf::Vector2f(release->position), speed, angle);
+                            sim.addBody(spawnMass(), *at, launchVelocity(*at, speed, angle));
+                        }
                     }
                     pressing = false;
                     dragging = false;
                 } else {
                     panning = false;
+                    orbiting = false;
                 }
             } else if (const auto* moved = event->getIf<sf::Event::MouseMoved>()) {
                 const sf::Vector2f at(moved->position);
                 if (panning) {
-                    camera.panPixels(at - lastPan);
-                    lastPan = at;
+                    camera.pan(lastDrag, at);
+                    state.follow.clear();  // panning moves the view off the followed body
+                    lastDrag = at;
+                } else if (orbiting) {
+                    camera.orbit(-(at.x - lastDrag.x) * ORBIT_RATE, (at.y - lastDrag.y) * ORBIT_RATE);
+                    lastDrag = at;
                 }
                 if (pressing && !dragging) {
                     const sf::Vector2f d = at - pressAt;
@@ -201,6 +220,7 @@ int main(int argc, char** argv) {
                     dragging = false;
                     break;
                 case sf::Keyboard::Key::F: state.resetViewRequested = true; break;
+                case sf::Keyboard::Key::T: state.topViewRequested = true; break;
                 default: break;
                 }
             }
@@ -211,9 +231,11 @@ int main(int argc, char** argv) {
         ImGui::SFML::Update(window, elapsed);
         mouse = sf::Vector2f(sf::Mouse::getPosition(window));
 
-        // Zoom toward the cursor, with a little inertia
+        // Zoom toward the cursor or toward the followed body with a little inertia
         if (std::abs(zoomVelocity) > 0.01f) {
-            camera.zoomAt(mouse, std::pow(1.0 / 0.9, static_cast<double>(zoomVelocity)));
+            const double factor = std::pow(1.0 / 0.9, static_cast<double>(zoomVelocity));
+            if (state.follow.empty()) camera.zoomAt(mouse, factor);
+            else camera.zoom(factor);
             zoomVelocity *= 0.85f;
         }
         // The panel follows the drag, so a plain click afterwards repeats the same shot
@@ -261,8 +283,10 @@ int main(int argc, char** argv) {
         stats.behind = behindTimer > 0.f;
         stats.sourceNote = sourceNote;
         stats.canRetry = canRetry && !fetch.valid();
-        ui::drawSidebar(state, clock, stats, sim.preset(), sim.getIntegrator().name(), SIDEBAR_WIDTH, height - STATUS_HEIGHT);
-        ui::drawStatusBar(sim, camera, mouse, clock, height - STATUS_HEIGHT, width, STATUS_HEIGHT);
+        stats.sunTravelled = state.sunSpeedKms * units::KMS_TO_AU_PER_DAY * sim.time();
+        ui::drawSidebar(state, clock, stats, sim.preset(), sim.getBodies(), sim.getIntegrator().name(), SIDEBAR_WIDTH,
+                        height - STATUS_HEIGHT);
+        ui::drawStatusBar(sim, camera, frame, mouse, clock, height - STATUS_HEIGHT, width, STATUS_HEIGHT);
 
         if (state.presetRequested >= 0) {
             loadPreset(static_cast<Preset>(state.presetRequested));
@@ -284,7 +308,13 @@ int main(int argc, char** argv) {
         }
         if (state.resetViewRequested) {
             camera.fit(sim.viewRadius());
+            if (frame.galactic) state.follow = "Sun";  // the start point is far behind by now
+            else state.follow.clear();
             state.resetViewRequested = false;
+        }
+        if (state.topViewRequested) {
+            camera.topView();
+            state.topViewRequested = false;
         }
         if (state.retryFetchRequested) {
             state.retryFetchRequested = false;
@@ -295,6 +325,32 @@ int main(int argc, char** argv) {
         const emma::Clock::Report ran = clock.run(sim, static_cast<double>(frameDt));
         behindTimer = ran.behind ? 1.f : std::max(0.f, behindTimer - frameDt);
         sim.updateEffects(frameDt);
+
+        // The galaxy view: the picture turned into Galactic coordinates and carried along
+        // the Sun's path. Only the solar system knows which way it faces in the Galaxy
+        frame.galactic = state.galaxyView && sim.preset() == Preset::SolarSystem;
+        frame.velocity = galaxy::sunVelocityKms().normalized() * (state.sunSpeedKms * units::KMS_TO_AU_PER_DAY);
+        frame.now = sim.time();
+        if (frame.galactic != wasGalactic) {
+            wasGalactic = frame.galactic;
+            if (frame.galactic) {
+                // Ride along with the Sun, looking across its path from a little above the plane
+                state.follow = "Sun";
+                camera.setAngles(0.5 * units::PI, 25.0 * units::DEG);
+            } else {
+                state.follow.clear();
+                camera.fit(sim.viewRadius());
+            }
+        }
+
+        // Keep the followed body in the middle. It may be gone after a merge or a new preset
+        if (!state.follow.empty()) {
+            const std::vector<Body>& bodies = sim.getBodies();
+            const auto followed = std::find_if(bodies.begin(), bodies.end(),
+                                               [&state](const Body& b) { return b.name == state.follow; });
+            if (followed != bodies.end()) camera.target = frame.place(followed->position);
+            else state.follow.clear();
+        }
 
         // Conservation check, a few times per second
         energyTimer += frameDt;
@@ -317,43 +373,57 @@ int main(int argc, char** argv) {
 
         // ------------------------------------------------------------------ drawing
         window.clear(sf::Color(4, 4, 9));
-        renderer.drawStarfield(window);
-        if (state.showTrails) renderer.drawTrails(window, camera, sim.getBodies());
-        renderer.drawBodies(window, camera, sim.getBodies());
-        renderer.drawFlashes(window, camera, sim.flashes);
+        renderer.drawStarfield(window, camera, frame);
+        if (state.showGrid) renderer.drawGrid(window, camera);
+        if (state.showTrails) renderer.drawTrails(window, camera, frame, sim.getBodies());
+        renderer.drawBodies(window, camera, frame, sim.getBodies());
+        renderer.drawFlashes(window, camera, frame, sim.flashes);
+        if (frame.galactic && frame.velocity.lengthSquared() > 0.0) {
+            // Which way the solar system is heading, from its barycenter
+            const Vector3D from = frame.place(Vector3D());
+            const Vector3D to = from + frame.velocity.normalized() * (0.6 * camera.distance);
+            renderer.drawRay(window, camera, from, to, sf::Color(217, 207, 255, 140));
+            ui::drawTag(camera, to, "Sun's direction of motion");
+        }
 
         // Preview of the next body: ghost, velocity arrow and predicted path
-        const bool hovering = !pressing && !panning && inViewport(mouse);
-        if (pressing || hovering) {
-            const sf::Vector2f anchor = pressing ? pressAt : mouse;
-            const Vector3D at = camera.toWorld(anchor);
+        const bool hovering = !pressing && !panning && !orbiting && inViewport(mouse);
+        const sf::Vector2f anchor = pressing ? pressAt : mouse;
+        const std::optional<Vector3D> at =
+            (pressing || hovering) && !frame.galactic ? camera.pick(anchor) : std::nullopt;
+        if (at) {
             double speed = state.speedKms, angle = state.angle;
             if (dragging) dragLaunch(mouse, speed, angle);
-            const Vector3D velocity = launchVelocity(at, speed, angle);
+            const Vector3D velocity = launchVelocity(*at, speed, angle);
             const double mass = spawnMass();
             const Rgb color = Body::colorForMass(mass);
 
-            if (state.showPath) renderer.drawPath(window, camera, sim.predictPath(at, velocity), color);
+            if (state.showPath) renderer.drawPath(window, camera, sim.predictPath(*at, velocity), color);
             renderer.drawGhost(window, anchor,
-                               Renderer::screenRadius(mass, Body::radiusForMass(mass), camera.pxPerAU), color);
+                               Renderer::screenRadius(mass, Body::radiusForMass(mass), camera.pxPerAUAt(*at)), color);
 
-            // Arrow for the velocity relative to the dominant body
-            const int host = sim.dominantBody(at);
+            // Arrow for the velocity relative to the dominant body, pointing the way that
+            // velocity looks on screen, with a length set by its speed
+            const int host = sim.dominantBody(*at);
             const Vector3D relative =
                 velocity - (host >= 0 ? sim.getBodies()[static_cast<std::size_t>(host)].velocity : Vector3D());
             const double kms = relative.magnitude() / units::KMS_TO_AU_PER_DAY;
-            if (kms > 0.05) {
-                const Vector3D dir = relative / relative.magnitude();
-                const double px = kms / KMS_PER_PIXEL;
-                const sf::Vector2f tip =
-                    anchor + sf::Vector2f(static_cast<float>(dir.x * px), static_cast<float>(-dir.y * px));
-                renderer.drawArrow(window, anchor, tip, dragging ? ARROW_COLOR : sf::Color(217, 207, 255, 150));
+            const std::optional<sf::Vector2f> from = camera.toScreen(*at);
+            const std::optional<sf::Vector2f> ahead =
+                camera.toScreen(*at + relative.normalized() * (1e-3 * camera.distance));
+            if (kms > 0.05 && from && ahead) {
+                const sf::Vector2f d = *ahead - *from;
+                const float len = std::hypot(d.x, d.y);
+                if (len > 0.f) {
+                    const sf::Vector2f tip = anchor + d * (static_cast<float>(kms / KMS_PER_PIXEL) / len);
+                    renderer.drawArrow(window, anchor, tip, dragging ? ARROW_COLOR : sf::Color(217, 207, 255, 150));
+                }
             }
             if (dragging) ui::drawLaunchReadout(mouse, speed, angle);
         }
 
-        if (state.showLabels) ui::drawLabels(camera, sim.getBodies());
-        if (hovering) ui::drawBodyTooltip(sim, camera, mouse);
+        if (state.showLabels) ui::drawLabels(camera, frame, sim.getBodies());
+        if (hovering) ui::drawBodyTooltip(sim, camera, frame, mouse);
 
         ImGui::SFML::Render(window);
         window.display();

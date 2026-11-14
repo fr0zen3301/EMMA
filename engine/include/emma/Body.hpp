@@ -14,6 +14,13 @@ struct Rgb {
 
 enum class BodyClass { RockyBody, NeptuneLike, GasGiant, BrownDwarf, Star };
 
+// A point on a body's trail and the moment it was there, so the trail can be drawn
+// in a frame that moves with time
+struct TrailPoint {
+    Vector3D position;
+    double time;  // days since time 0
+};
+
 class Body {
 public:
     // A spawned body: its radius and color follow from its mass
@@ -33,7 +40,7 @@ public:
     std::string kind;           // "G2V star", "Gas giant", empty for spawned bodies
     bool alive = true;
 
-    std::deque<Vector3D> trail;
+    std::deque<TrailPoint> trail;
     Vector3D trailHeading;
     
     bool isNamed() const { return !name.empty(); }
