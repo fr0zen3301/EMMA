@@ -7,14 +7,19 @@ namespace emma {
 namespace {
 
 struct OrbitState {
-    Vector2D position;
-    Vector2D velocity;
+    Vector3D position;
+    Vector3D velocity;
 };
 
-// Position and velocity on a Kepler orbit, relative to the primary, in the orbit plane.
-// mu = G (M + m). Angles in degrees: longitude of perihelion and mean longitude
-OrbitState keplerState(double mu, double a, double e, double longPeriDeg, double meanLongDeg) {
+// Position and velocity on a Kepler orbit, relative to the primary, in the ecliptic frame.
+// mu = G (M + m). Angles in degrees: longitude of perihelion, mean longitude,
+// inclination and longitude of the ascending node
+OrbitState keplerState(double mu, double a, double e, double longPeriDeg, double meanLongDeg,
+                       double inclDeg = 0.0, double nodeDeg = 0.0) {
     const double varpi = longPeriDeg * units::DEG;
+    const double node = nodeDeg * units::DEG;
+    const double incl = inclDeg * units::DEG;
+    const double argPeri = varpi - node;
     const double M = std::remainder((meanLongDeg - longPeriDeg) * units::DEG, 2.0 * units::PI);
 
     // Kepler's equation E - e sin E = M, by Newton's method
@@ -30,13 +35,19 @@ OrbitState keplerState(double mu, double a, double e, double longPeriDeg, double
     const double r = a * (1.0 - e * std::cos(E));
     const double h = std::sqrt(mu / (a * (1.0 - e * e)));
 
-    const double theta = nu + varpi;
-    const Vector2D position(r * std::cos(theta), r * std::sin(theta));
-    // perifocal velocity (-sin nu, e + cos nu) * sqrt(mu / p), rotated by varpi
-    const double vx = -h * std::sin(nu);
-    const double vy = h * (e + std::cos(nu));
-    const Vector2D velocity(vx * std::cos(varpi) - vy * std::sin(varpi),
-                            vx * std::sin(varpi) + vy * std::cos(varpi));
+    const double cw = std::cos(argPeri), sw = std::sin(argPeri);
+    const double ci = std::cos(incl), si = std::sin(incl);
+    const double cn = std::cos(node), sn = std::sin(node);
+    auto orient = [&](double px, double py) {
+        const double x1 = px * cw - py * sw;
+        const double y1 = px * sw + py * cw;
+        const double y2 = y1 * ci;
+        return Vector3D(x1 * cn - y2 * sn, x1 * sn + y2 * cn, y1 * si);
+    };
+
+    const Vector3D position = orient(r * std::cos(nu), r * std::sin(nu));
+    // perifocal velocity (-sin nu, e + cos nu) * sqrt(mu / p), rotated into place
+    const Vector3D velocity = orient(-h * std::sin(nu), h * (e + std::cos(nu)));
     return OrbitState{position, velocity};
 }
 
@@ -63,20 +74,20 @@ const SolarBodyInfo SOLAR_BODIES[SOLAR_BODY_COUNT] = {
 };
 
 struct Elements {
-    std::size_t body;                 // index into SOLAR_BODIES
-    double a, e, longPeri, meanLong;  // AU, -, degrees, degrees
+    std::size_t body;                             // index into SOLAR_BODIES
+    double a, e, longPeri, meanLong, incl, node;  // AU, -, degrees, degrees, degrees, degrees
 };
 
 // E. M. Standish, "Keplerian Elements for Approximate Positions of the Major
 // Planets" (JPL), table 1, epoch J2000. Earth and the Moon are placed separately.
 const Elements PLANET_ELEMENTS[] = {
-    {1, 0.38709927, 0.20563593, 77.45779628, 252.25032350},
-    {2, 0.72333566, 0.00677672, 131.60246718, 181.97909950},
-    {5, 1.52371034, 0.09339410, -23.94362959, -4.55343205},
-    {6, 5.20288700, 0.04838624, 14.72847983, 34.39644051},
-    {7, 9.53667594, 0.05386179, 92.59887831, 49.95424423},
-    {8, 19.18916464, 0.04725744, 170.95427630, 313.23810451},
-    {9, 30.06992276, 0.00859048, 44.96476227, -55.12002969},
+    {1, 0.38709927, 0.20563593, 77.45779628, 252.25032350, 7.00497902, 48.33076593},
+    {2, 0.72333566, 0.00677672, 131.60246718, 181.97909950, 3.39467605, 76.67984255},
+    {5, 1.52371034, 0.09339410, -23.94362959, -4.55343205, 1.84969142, 49.55953891},
+    {6, 5.20288700, 0.04838624, 14.72847983, 34.39644051, 1.30439695, 100.47390909},
+    {7, 9.53667594, 0.05386179, 92.59887831, 49.95424423, 2.48599187, 113.66242448},
+    {8, 19.18916464, 0.04725744, 170.95427630, 313.23810451, 0.77263783, 74.01692503},
+    {9, 30.06992276, 0.00859048, 44.96476227, -55.12002969, 1.77004347, 131.78422574},
 };
 
 Scenario solarSystem(const SolarSnapshot* snapshot) {
@@ -86,7 +97,7 @@ Scenario solarSystem(const SolarSnapshot* snapshot) {
     s.viewRadius = 1.8;    // Mars's orbit fills the view
     s.timeScale = 30.0;    // an Earth year in about 12 seconds
 
-    std::array<Vector2D, SOLAR_BODY_COUNT> position, velocity;
+    std::array<Vector3D, SOLAR_BODY_COUNT> position, velocity;
     if (snapshot) {
         // Measured state vectors, from JPL Horizons
         position = snapshot->position;
@@ -97,7 +108,7 @@ Scenario solarSystem(const SolarSnapshot* snapshot) {
         s.epoch = units::J2000_JD;
         for (const Elements& el : PLANET_ELEMENTS) {
             const double mu = units::G * (1.0 + SOLAR_BODIES[el.body].mass);
-            const OrbitState o = keplerState(mu, el.a, el.e, el.longPeri, el.meanLong);
+            const OrbitState o = keplerState(mu, el.a, el.e, el.longPeri, el.meanLong, el.incl, el.node);
             position[el.body] = o.position;
             velocity[el.body] = o.velocity;
         }
@@ -106,9 +117,9 @@ Scenario solarSystem(const SolarSnapshot* snapshot) {
         const double earthMass = SOLAR_BODIES[3].mass, moonMass = SOLAR_BODIES[4].mass;
         const double pairMass = earthMass + moonMass;
         const OrbitState bary = keplerState(units::G * (1.0 + pairMass), 1.00000261, 0.01671123,
-                                            102.93768193, 100.46457166);
+                                            102.93768193, 100.46457166, -0.00001531, 0.0);
         const OrbitState moon = keplerState(units::G * pairMass, 384400.0 / units::KM_PER_AU, 0.0549,
-                                            218.3164477 - 134.9633964, 218.3164477);
+                                            218.3164477 - 134.9633964, 218.3164477, 5.145396, 125.0445479);
         position[3] = bary.position - moon.position * (moonMass / pairMass);
         velocity[3] = bary.velocity - moon.velocity * (moonMass / pairMass);
         position[4] = bary.position + moon.position * (earthMass / pairMass);

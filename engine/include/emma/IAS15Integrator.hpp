@@ -1,6 +1,6 @@
 #pragma once
 #include "emma/Integrator.hpp"
-#include "emma/Vector2D.hpp"
+#include "emma/Vector3D.hpp"
 #include <array>
 #include <vector>
 
@@ -36,7 +36,7 @@ public:
 
 private:
     // a(t) = a0 + b[0] t + b[1] t^2 + ... + b[6] t^7, with t running from 0 to 1 across the step
-    using Coefficients = std::array<Vector2D, 7>;
+    using Coefficients = std::array<Vector3D, 7>;
 
     double piece(World& world, Gravity& gravity, double h, double minPiece);  // returns the length it took
     void converge(std::vector<Body>& bodies, Gravity& gravity, double h);    // the predictor-corrector
@@ -44,7 +44,7 @@ private:
     void rescale(double ratio);          // the same curve over a piece ratio times as long
     void predictNextStep(double ratio);  // shifts b so it starts where the last step ended
 
-    std::vector<Vector2D> x0, v0, a0;  // each body at the start of the step
+    std::vector<Vector3D> x0, v0, a0;  // each body at the start of the step
     std::vector<Coefficients> b;       // the polynomial, in powers of t
     std::vector<Coefficients> g;       // the same polynomial in Newton form
     bool hasHistory = false;           // b holds the last step's polynomial

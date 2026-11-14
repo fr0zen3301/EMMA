@@ -50,11 +50,11 @@ The gravitational constant then becomes G = k², where k = 0.01720209895 is the 
 
 ### Starting positions
 
-When EMMA starts, it asks JPL Horizons for the position and velocity of the Sun, each planet and the Moon at 00:00 UTC today. The numbers are measured from the solar system's barycenter, which is the center of mass of the whole system, and lie in the ecliptic plane, the plane of Earth's orbit. Horizons computes them from DE441, JPL's planetary ephemeris: a model that gives the position of each planet and moon at any moment. For Mars and the outer planets, EMMA asks for the barycenter of the planet together with its moons, which matches the masses it uses for them: each one includes the planet's moons.
+When EMMA starts, it asks JPL Horizons for the position and velocity of the Sun, each planet and the Moon at 00:00 UTC today. The numbers are measured from the solar system's barycenter, which is the center of mass of the whole system, in the J2000 ecliptic frame: x and y lie in the ecliptic plane, the plane of Earth's orbit, with x pointing toward the March equinox, and z is the height above or below that plane. Horizons computes them from DE441, JPL's planetary ephemeris: a model that gives the position of each planet and moon at any moment. For Mars and the outer planets, EMMA asks for the barycenter of the planet together with its moons, which matches the masses it uses for them: each one includes the planet's moons.
 
 The ten requests take a few seconds, and the solar system waits, paused, until they finish. EMMA saves the result in the system's temporary folder, so a second start on the same day needs no network.
 
-Without a connection, EMMA starts from the last positions it saved. If it has never downloaded any, it starts from average orbits for 1 January 2000 (mean orbital elements). The sidebar says which one it used and offers to try the download again.
+Without a connection, EMMA starts from the last positions it saved. If it has never downloaded any, it starts from average orbits for 1 January 2000 (mean orbital elements). These keep each orbit's tilt (its inclination) and the line where it crosses the ecliptic (its ascending node), so Mercury's orbit sits 7° out of the plane and the Moon's about 5°. The sidebar says which start it used and offers to try the download again.
 
 ### Integration
 
@@ -88,7 +88,7 @@ Above 64 bodies, EMMA switches from IAS15 to Verlet by itself, and the sidebar s
 
 ### Forces
 
-Up to 64 bodies, EMMA adds up the pull between every pair directly, once per pair. That is exact, and at this size it is faster than building a tree. Above 64 bodies it switches to a Barnes-Hut quadtree, which treats a distant group of bodies as a single point mass at the group's center of mass. With an opening angle of 0.5, a group counts as distant when it is less than half as wide as its distance from the body being pulled. That brings the cost down from N² to about N log N. The tree is stored in one flat array that gets reused every step.
+Up to 64 bodies, EMMA adds up the pull between every pair directly, once per pair. That is exact, and at this size it is faster than building a tree. Above 64 bodies it switches to a Barnes-Hut octree, which splits space into nested cubes and treats a distant group of bodies as a single point mass at the group's center of mass. With an opening angle of 0.5, a group counts as distant when it is less than half as wide as its distance from the body being pulled. That brings the cost down from N² to about N log N. The tree is stored in one flat array that gets reused every step.
 
 Gravity is softened very slightly (Plummer softening, with a length of 10⁻⁷ AU, about 15 km). That is smaller than any body's radius, so in practice the force is plain Newtonian gravity, and the softening only keeps the force from dividing by zero when two bodies sit at the same point. The energy readout uses the potential energy that goes with exactly this softened force.
 
@@ -114,9 +114,9 @@ At solar-system scale a planet is much smaller than a pixel, so every body is dr
 
 ## Accuracy and limits
 
-- The simulation is 2D. Orbits lie flat in the ecliptic plane and their tilts (inclinations) are dropped. The largest, Mercury's, is 7°.
+- The physics is 3D, but the view isn't yet. The camera looks straight down on the ecliptic plane, so the tilts of the orbits don't show on screen, and a body you add starts in that plane, moving along it.
 - Gravity is Newtonian. General relativity makes Mercury's orbit turn an extra 43 arcseconds per century (its perihelion precession), and EMMA leaves that out.
-- Today's positions from Horizons are flattened onto the ecliptic plane, which drops each planet's small distance above or below it. Offline, the planets start from mean Keplerian elements, good to a fraction of a degree around the year 2000.
+- Offline, the planets start from mean Keplerian elements, good to a fraction of a degree around the year 2000.
 - With Verlet, a split step isn't symplectic, so each close pass leaves a small permanent offset in the energy drift. The planets and the Moon never need split steps. IAS15 isn't symplectic either, but its error through a close pass is far smaller.
 - Merges are perfectly inelastic (the two bodies stick together), so they lower the total energy. The drift readout starts from a new baseline whenever bodies are added, merged or loaded.
 
@@ -154,6 +154,7 @@ Release builds on Windows open without a console window. If the font is missing,
 The tests build along with EMMA and don't need SFML. They check that:
 
 - the offline start puts Earth where it was on 1 January 2000
+- the offline start tilts Mercury's orbit by 7° and the Moon's by about 5°, and Mercury's stays at 7° over ten years
 - Earth's orbit takes one sidereal year
 - energy and angular momentum stay conserved over ten simulated years
 - a close pass doesn't speed bodies up
@@ -191,11 +192,11 @@ EMMA has two parts. The engine, in `engine/`, is built as the `emma_core` librar
 | `Presets.hpp` / `Presets.cpp` | The solar system and Alpha Centauri, each built as a scenario: bodies plus settings |
 | `Clock.hpp` / `Clock.cpp` | Time: speed, pause, single steps, real time, and how many fixed steps each frame runs |
 | `Body.hpp` / `Body.cpp` | A single body, plus the mass-radius, temperature and color relations |
-| `QuadTree.hpp` / `QuadTree.cpp` | Barnes-Hut tree for systems above 64 bodies |
+| `Octree.hpp` / `Octree.cpp` | Barnes-Hut tree for systems above 64 bodies |
 | `Horizons.hpp` / `Horizons.cpp` | Today's positions from JPL Horizons: the requests, the JSON replies and their error messages, the parser and the cache |
 | `Calendar.hpp` / `Calendar.cpp` | Julian days, calendar dates and local time |
 | `Constants.hpp` | Units and physical constants |
-| `Vector2D.hpp` | Header-only 2D vector |
+| `Vector3D.hpp` | Header-only 3D vector |
 | `engine/src/Http.hpp` / `Http.cpp` | HTTPS requests, with WinHTTP on Windows and the system curl elsewhere. Private to the engine |
 
 ### App

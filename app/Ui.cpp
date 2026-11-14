@@ -293,7 +293,7 @@ void drawStatusBar(const Simulation& sim, const Camera& camera, sf::Vector2f mou
     const double viewWidth = camera.viewport.size.x / camera.pxPerAU;
     ImGui::TextDisabled("View %s across", formatDistance(viewWidth).c_str());
     if (camera.viewport.contains(mouse)) {
-        const Vector2D w = camera.toWorld(mouse);
+        const Vector3D w = camera.toWorld(mouse);
         ImGui::SameLine(0.f, 28.f);
         ImGui::TextDisabled("Cursor %.4f, %.4f AU", w.x, w.y);
     }

@@ -5,14 +5,14 @@ namespace emma {
 
 void World::moveToBarycenter() {
     double m = 0.0;
-    Vector2D r, p;
+    Vector3D r, p;
     for (const Body& b : bodies) {
         m += b.mass;
         r += b.position * b.mass;
         p += b.velocity * b.mass;
     }
     if (m <= 0.0) return;
-    const Vector2D com = r / m, drift = p / m;
+    const Vector3D com = r / m, drift = p / m;
     for (Body& b : bodies) {
         b.position -= com;
         b.velocity -= drift;
@@ -27,7 +27,7 @@ void World::recordTrails() {
     for (Body& b : bodies) {
         const double speed = b.velocity.magnitude();
         if (speed <= 0.0) continue;
-        const Vector2D heading = b.velocity / speed;
+        const Vector3D heading = b.velocity / speed;
         if (!b.trail.empty() && heading.dot(b.trailHeading) > cosTurn) continue;
         b.trail.push_back(b.position);
         if (b.trail.size() > MAX_TRAIL) b.trail.pop_front();
@@ -41,9 +41,9 @@ double World::kineticEnergy() const {
     return kinetic;
 }
 
-double World::angularMomentum() const {
-    double l = 0.0;
-    for (const Body& b : bodies) l += b.mass * b.position.cross(b.velocity);
+Vector3D World::angularMomentum() const {
+    Vector3D l;
+    for (const Body& b : bodies) l += b.position.cross(b.velocity) * b.mass;
     return l;
 }
 

@@ -10,10 +10,10 @@ void Gravity::accelerate(std::vector<Body>& bodies) {
 
     if (n <= DIRECT_LIMIT) {
         // Newton's third law
-        for (Body& b : bodies) b.acceleration = Vector2D();
+        for (Body& b : bodies) b.acceleration = Vector3D();
         for (std::size_t i = 0; i < n; ++i) {
             for (std::size_t j = i + 1; j < n; ++j) {
-                const Vector2D d = bodies[j].position - bodies[i].position;
+                const Vector3D d = bodies[j].position - bodies[i].position;
                 const double r2 = d.lengthSquared() + eps2;
                 const double s = units::G / (r2 * std::sqrt(r2));
                 bodies[i].acceleration += d * (s * bodies[j].mass);

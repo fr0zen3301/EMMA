@@ -51,9 +51,9 @@ double choose(std::size_t n, std::size_t k) {
 // Where a body is at fraction s of a step of h days: its acceleration polynomial
 // integrated twice. With t = s h:
 // x = x0 + v0 t + t^2 (a0/2 + b0 s/6 + b1 s^2/12 + b2 s^3/20 + ... + b6 s^7/72)
-Vector2D positionAt(const Vector2D& x0, const Vector2D& v0, const Vector2D& a0,
-                    const std::array<Vector2D, 7>& b, double s, double h) {
-    Vector2D p;
+Vector3D positionAt(const Vector3D& x0, const Vector3D& v0, const Vector3D& a0,
+                    const std::array<Vector3D, 7>& b, double s, double h) {
+    Vector3D p;
     for (std::size_t r = 0; r < 7; ++r) {
         const std::size_t k = 6 - r;  // innermost term first (Horner's rule)
         const double kk = static_cast<double>(k);
@@ -66,8 +66,8 @@ Vector2D positionAt(const Vector2D& x0, const Vector2D& v0, const Vector2D& a0,
 
 // Velocity at the end of a step of h days: the polynomial integrated once.
 // v = v0 + h (a0 + b0/2 + b1/3 + ... + b6/8)
-Vector2D velocityAtEnd(const Vector2D& v0, const Vector2D& a0, const std::array<Vector2D, 7>& b, double h) {
-    Vector2D sum = a0;
+Vector3D velocityAtEnd(const Vector3D& v0, const Vector3D& a0, const std::array<Vector3D, 7>& b, double h) {
+    Vector3D sum = a0;
     for (std::size_t k = 0; k < 7; ++k) sum += b[k] / (static_cast<double>(k) + 2.0);
     return v0 + sum * h;
 }
@@ -150,7 +150,7 @@ void IAS15Integrator::converge(std::vector<Body>& bodies, Gravity& gravity, doub
     for (std::size_t i = 0; i < n; ++i) {
         for (std::size_t r = 0; r < 7; ++r) {
             const std::size_t j = 6 - r;
-            Vector2D value = b[i][j];
+            Vector3D value = b[i][j];
             for (std::size_t k = j + 1; k < 7; ++k) value -= g[i][k] * NEWTON_TO_POWER[k][j];
             g[i][j] = value;
         }
@@ -166,11 +166,11 @@ void IAS15Integrator::converge(std::vector<Body>& bodies, Gravity& gravity, doub
             gravity.accelerate(bodies);
 
             for (std::size_t i = 0; i < n; ++i) {
-                const Vector2D& a = bodies[i].acceleration;
+                const Vector3D& a = bodies[i].acceleration;
                 // Divided differences: the Newton coefficient this sample pins down
-                Vector2D value = (a - a0[i]) / s;
+                Vector3D value = (a - a0[i]) / s;
                 for (std::size_t m = 1; m < node; ++m) value = (value - g[i][m - 1]) / (s - NODES[m]);
-                const Vector2D delta = value - g[i][node - 1];
+                const Vector3D delta = value - g[i][node - 1];
                 g[i][node - 1] = value;
                 // ... and the power-form coefficients it feeds into
                 for (std::size_t j = 0; j < node; ++j) b[i][j] += delta * NEWTON_TO_POWER[node - 1][j];
@@ -223,7 +223,7 @@ void IAS15Integrator::predictNextStep(double ratio) {
         Coefficients shifted{};
         double power = ratio;  // ratio^(j+1)
         for (std::size_t j = 0; j < 7; ++j) {
-            Vector2D sum;
+            Vector3D sum;
             for (std::size_t k = j; k < 7; ++k) sum += c[k] * choose(k + 1, j + 1);
             shifted[j] = sum * power;
             power *= ratio;

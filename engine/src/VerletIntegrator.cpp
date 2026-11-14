@@ -60,9 +60,7 @@ double VerletIntegrator::dynamicalTime(const std::vector<Body>& bodies) const {
     double t = std::numeric_limits<double>::infinity();
     const std::size_t n = bodies.size();
 
-    // With many bodies, scanning every pair on every piece would cost more than the
-    // tree saves. Use how fast each body's acceleration changed over the last piece:
-    // |a| / |da/dt|
+    // Use how fast each body's acceleration changed over the last piece |a| / |da/dt|
     if (n > Gravity::DIRECT_LIMIT && jerkValid && oldAcceleration.size() == n) {
         for (std::size_t i = 0; i < n; ++i) {
             const double change = (bodies[i].acceleration - oldAcceleration[i]).magnitude();

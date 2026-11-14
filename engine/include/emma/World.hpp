@@ -21,7 +21,7 @@ struct World {
     void moveToBarycenter();         // puts the center of mass at the origin, at rest
     void recordTrails();             // a new point for each body that has turned TRAIL_TURN since its last
     double kineticEnergy() const;    // Msun AU^2 / day^2
-    double angularMomentum() const;  // Msun AU^2 / day, about the origin
+    Vector3D angularMomentum() const;  // Msun AU^2 / day, about the origin
 };
 
 }

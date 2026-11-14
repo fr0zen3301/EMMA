@@ -16,7 +16,7 @@ public:
     void drawBodies(sf::RenderTarget& target, const Camera& camera, const std::vector<emma::Body>& bodies);
     void drawFlashes(sf::RenderTarget& target, const Camera& camera,
                      const std::vector<emma::MergeFlash>& flashes) const;
-    void drawPath(sf::RenderTarget& target, const Camera& camera, const std::vector<emma::Vector2D>& path,
+    void drawPath(sf::RenderTarget& target, const Camera& camera, const std::vector<emma::Vector3D>& path,
                   emma::Rgb color);
     void drawGhost(sf::RenderTarget& target, sf::Vector2f at, float radius, emma::Rgb color) const;
     void drawArrow(sf::RenderTarget& target, sf::Vector2f from, sf::Vector2f to, sf::Color color) const;

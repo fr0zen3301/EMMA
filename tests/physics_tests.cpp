@@ -7,7 +7,7 @@
 #include "emma/Constants.hpp"
 #include "emma/Horizons.hpp"
 #include "emma/IAS15Integrator.hpp"
-#include "emma/QuadTree.hpp"
+#include "emma/Octree.hpp"
 #include "emma/Simulation.hpp"
 #include <algorithm>
 #include <cmath>
@@ -47,6 +47,10 @@ double relative(double value, double reference) {
     return std::abs((value - reference) / reference);
 }
 
+double relative(const Vector3D& value, const Vector3D& reference) {
+    return (value - reference).magnitude() / reference.magnitude();
+}
+
 // ---------------------------------------------------------------------------
 
 void testCalendar() {
@@ -68,12 +72,13 @@ void testHorizonsParse() {
         "2461353.500000000, A.D. 2026-Nov-09 00:00:00.0000,  6.123456789012345E-01,  7.654321098765432E-01, "
         "-3.123456789012345E-05, -1.345678901234567E-02,  1.098765432109876E-02,  2.345678901234567E-07,\n"
         "$$EOE\n";
-    Vector2D p, v;
+    Vector3D p, v;
     std::string error;
     const bool ok = horizons::parseStateVector(reply, p, v, error);
     CHECK(ok, "parse failed: %s", error.c_str());
     CHECK(p.x == 6.123456789012345E-01 && p.y == 7.654321098765432E-01, "position %.15g, %.15g", p.x, p.y);
     CHECK(v.x == -1.345678901234567E-02 && v.y == 1.098765432109876E-02, "velocity %.15g, %.15g", v.x, v.y);
+    CHECK(p.z == -3.123456789012345E-05 && v.z == 2.345678901234567E-07, "z %.15g, vz %.15g", p.z, v.z);
 
     // An error reply has no table: its message should come through
     const std::string failure = "API VERSION: 1.2\nAPI SOURCE: NASA/JPL Horizons API\n\n"
@@ -99,7 +104,7 @@ void testHorizonsReply() {
     CHECK(output.find("$$SOE\n") != std::string::npos, "newlines not unescaped: %s", output.c_str());
     CHECK(output.find("\"done\"") != std::string::npos, "quotes not unescaped: %s", output.c_str());
     CHECK(output.find("\xC3\xA9") != std::string::npos, "\\u00e9 did not become UTF-8");
-    Vector2D p, v;
+    Vector3D p, v;
     CHECK(horizons::parseStateVector(output, p, v, error) && p.x == 1.0E-03 && v.y == 4.0E-06,
           "table inside the JSON reply not read: %s", error.c_str());
 
@@ -133,7 +138,7 @@ void testJ2000Start() {
     // Sun at heliocentric longitude 100.38 deg
     Simulation sim;
     sim.load(Preset::SolarSystem);
-    const Vector2D r = find(sim, "Earth").position - find(sim, "Sun").position;
+    const Vector3D r = find(sim, "Earth").position - find(sim, "Sun").position;
     const double distance = r.magnitude();
     double longitude = std::atan2(r.y, r.x) / units::DEG;
     if (longitude < 0.0) longitude += 360.0;
@@ -149,8 +154,8 @@ void earthYear(Simulation& sim) {
     auto angle = [&sim]() {
         const Body& earth = find(sim, "Earth");
         const Body& moon = find(sim, "Moon");
-        const Vector2D pair = (earth.position * earth.mass + moon.position * moon.mass) / (earth.mass + moon.mass);
-        const Vector2D r = pair - find(sim, "Sun").position;
+        const Vector3D pair = (earth.position * earth.mass + moon.position * moon.mass) / (earth.mass + moon.mass);
+        const Vector3D r = pair - find(sim, "Sun").position;
         return std::atan2(r.y, r.x);
     };
 
@@ -189,7 +194,8 @@ void testConservation() {
     // Ten years of the solar system
     Simulation sim;
     sim.load(Preset::SolarSystem);
-    const double e0 = sim.totalEnergy(), l0 = sim.angularMomentum();
+    const double e0 = sim.totalEnergy();
+    const Vector3D l0 = sim.angularMomentum();
     const int steps = static_cast<int>(10.0 * units::DAYS_PER_YEAR / sim.timeStep());
     double worstEnergy = 0.0;
     int maxPieces = 1;
@@ -212,7 +218,8 @@ void testIas15Conservation() {
     Simulation sim;
     sim.setIntegrator(std::make_unique<IAS15Integrator>());
     sim.load(Preset::SolarSystem);
-    const double e0 = sim.totalEnergy(), l0 = sim.angularMomentum();
+    const double e0 = sim.totalEnergy();
+    const Vector3D l0 = sim.angularMomentum();
     const int steps = static_cast<int>(10.0 * units::DAYS_PER_YEAR / sim.timeStep());
     double worstEnergy = 0.0;
     for (int i = 0; i < steps; ++i) {
@@ -233,12 +240,12 @@ void closePass(Simulation& sim, double tolerance) {
     const double m = units::EARTH_MASS;
     const double v = 2.0 * units::KMS_TO_AU_PER_DAY;  // each, so 4 km/s apart
     const double b = 4.3e-4;                          // AU, offset between their paths
-    sim.addBody(m, Vector2D(-0.01, 0.5 * b), Vector2D(v, 0.0));
-    sim.addBody(m, Vector2D(0.01, -0.5 * b), Vector2D(-v, 0.0));
+    sim.addBody(m, Vector3D(-0.01, 0.5 * b), Vector3D(v, 0.0));
+    sim.addBody(m, Vector3D(0.01, -0.5 * b), Vector3D(-v, 0.0));
 
     auto pairEnergy = [&sim, m]() {  // energy of the relative orbit, per unit reduced mass
         const auto& bodies = sim.getBodies();
-        const Vector2D dv = bodies[1].velocity - bodies[0].velocity;
+        const Vector3D dv = bodies[1].velocity - bodies[0].velocity;
         const double r = (bodies[1].position - bodies[0].position).magnitude();
         return 0.5 * dv.lengthSquared() - units::G * 2.0 * m / r;
     };
@@ -275,8 +282,8 @@ void headOnMerge(Simulation& sim) {
     sim.load(Preset::Empty);
     const double m1 = units::EARTH_MASS, m2 = 0.5 * units::EARTH_MASS;
     const double v = 10.0 * units::KMS_TO_AU_PER_DAY;
-    sim.addBody(m1, Vector2D(-0.002, 0.0), Vector2D(v, 0.0));
-    sim.addBody(m2, Vector2D(0.002, 0.0), Vector2D(-2.0 * v, 0.0));
+    sim.addBody(m1, Vector3D(-0.002, 0.0), Vector3D(v, 0.0));
+    sim.addBody(m2, Vector3D(0.002, 0.0), Vector3D(-2.0 * v, 0.0));
     const double centerX = (m1 * -0.002 + m2 * 0.002) / (m1 + m2);
 
     while (sim.time() < 5.0 && sim.getBodyCount() == 2) sim.step();
@@ -308,11 +315,11 @@ void testCrowdedClosePass() {
     Simulation sim;
     sim.load(Preset::Empty);
     for (std::size_t i = 0; i < Simulation::DIRECT_LIMIT; ++i)
-        sim.addBody(units::EARTH_MASS, Vector2D(10.0 + static_cast<double>(i), 0.0), Vector2D());
+        sim.addBody(units::EARTH_MASS, Vector3D(10.0 + static_cast<double>(i), 0.0), Vector3D());
     // Two bodies 0.01 AU apart, closing at 0.01 AU/day: about a day from meeting,
     // so the 0.1-day step has to split
-    sim.addBody(units::EARTH_MASS, Vector2D(0.0, 0.0), Vector2D());
-    sim.addBody(units::EARTH_MASS, Vector2D(0.01, 0.0), Vector2D(-0.01, 0.0005));
+    sim.addBody(units::EARTH_MASS, Vector3D(0.0, 0.0), Vector3D());
+    sim.addBody(units::EARTH_MASS, Vector3D(0.01, 0.0), Vector3D(-0.01, 0.0005));
     sim.step();
     CHECK(sim.lastSubstepCount() > 1, "the first step with %zu bodies ran as %d piece(s)",
           sim.getBodyCount(), sim.lastSubstepCount());
@@ -325,10 +332,10 @@ void testIas15Guard() {
     sim.setIntegrator(std::make_unique<IAS15Integrator>());
     sim.load(Preset::Empty);
     for (std::size_t i = 0; i < Simulation::DIRECT_LIMIT; ++i)
-        sim.addBody(units::EARTH_MASS, Vector2D(static_cast<double>(i), 0.0), Vector2D());
+        sim.addBody(units::EARTH_MASS, Vector3D(static_cast<double>(i), 0.0), Vector3D());
     CHECK(sim.getIntegrator().needsExactForces(), "IAS15 was dropped at %zu bodies", sim.getBodyCount());
 
-    sim.addBody(units::EARTH_MASS, Vector2D(-1.0, 0.0), Vector2D());
+    sim.addBody(units::EARTH_MASS, Vector3D(-1.0, 0.0), Vector3D());
     CHECK(!sim.getIntegrator().needsExactForces(), "IAS15 still runs with %zu bodies", sim.getBodyCount());
 
     sim.setIntegrator(std::make_unique<IAS15Integrator>());
@@ -343,19 +350,19 @@ void testBarnesHut() {
     std::uniform_real_distribution<double> coordinate(-10.0, 10.0), mass(1e-6, 1e-3);
     std::vector<Body> bodies;
     for (int i = 0; i < 300; ++i)
-        bodies.emplace_back(mass(rng), Vector2D(coordinate(rng), coordinate(rng)), Vector2D());
+        bodies.emplace_back(mass(rng), Vector3D(coordinate(rng), coordinate(rng), coordinate(rng)), Vector3D());
 
     const double eps2 = Simulation::SOFTENING * Simulation::SOFTENING;
-    QuadTree tree;
+    Octree tree;
     tree.build(bodies);
 
     double worstExact = 0.0;
     std::vector<double> errors;
     for (std::size_t i = 0; i < bodies.size(); ++i) {
-        Vector2D direct;
+        Vector3D direct;
         for (std::size_t j = 0; j < bodies.size(); ++j) {
             if (j == i) continue;
-            const Vector2D d = bodies[j].position - bodies[i].position;
+            const Vector3D d = bodies[j].position - bodies[i].position;
             const double r2 = d.lengthSquared() + eps2;
             direct += d * (units::G * bodies[j].mass / (r2 * std::sqrt(r2)));
         }
@@ -384,8 +391,8 @@ void testDominantBody() {
     binary.load(Preset::AlphaCentauri);
     const int a = indexOf(binary, "Alpha Centauri A"), b = indexOf(binary, "Alpha Centauri B");
     const auto& stars = binary.getBodies();
-    const int nearA = binary.dominantBody(stars[static_cast<std::size_t>(a)].position + Vector2D(0.5, 0.0));
-    const int nearB = binary.dominantBody(stars[static_cast<std::size_t>(b)].position + Vector2D(0.5, 0.0));
+    const int nearA = binary.dominantBody(stars[static_cast<std::size_t>(a)].position + Vector3D(0.5, 0.0));
+    const int nearB = binary.dominantBody(stars[static_cast<std::size_t>(b)].position + Vector3D(0.5, 0.0));
     CHECK(nearA == a, "0.5 AU from A, body %d rules instead of A (%d)", nearA, a);
     CHECK(nearB == b, "0.5 AU from B, body %d rules instead of B (%d)", nearB, b);
 
@@ -393,18 +400,18 @@ void testDominantBody() {
     Simulation solar;
     solar.load(Preset::SolarSystem);
     const int earth = indexOf(solar, "Earth"), sun = indexOf(solar, "Sun");
-    const Vector2D nearEarth = solar.getBodies()[static_cast<std::size_t>(earth)].position + Vector2D(0.001, 0.0);
+    const Vector3D nearEarth = solar.getBodies()[static_cast<std::size_t>(earth)].position + Vector3D(0.001, 0.0);
     CHECK(solar.dominantBody(nearEarth) == earth, "150,000 km from Earth, body %d rules instead of Earth",
           solar.dominantBody(nearEarth));
-    CHECK(solar.dominantBody(Vector2D(0.0, 2.5)) == sun, "2.5 AU out, body %d rules instead of the Sun",
-          solar.dominantBody(Vector2D(0.0, 2.5)));
+    CHECK(solar.dominantBody(Vector3D(0.0, 2.5)) == sun, "2.5 AU out, body %d rules instead of the Sun",
+          solar.dominantBody(Vector3D(0.0, 2.5)));
 }
 
 void testTrailSmoothness() {
     // A planet put on a circular 1 AU orbit around Alpha Centauri A
     Simulation sim;
     sim.load(Preset::AlphaCentauri);
-    const Vector2D start = find(sim, "Alpha Centauri A").position + Vector2D(1.0, 0.0);
+    const Vector3D start = find(sim, "Alpha Centauri A").position + Vector3D(1.0, 0.0);
     sim.addBody(units::EARTH_MASS, start, sim.circularVelocity(start));
     while (sim.time() < 2.0 * units::DAYS_PER_YEAR) sim.step();
 
@@ -417,7 +424,7 @@ void testTrailSmoothness() {
     double worst = 0.0;
     const auto& t = planet.trail;
     for (std::size_t k = 2; k < t.size(); ++k) {
-        const Vector2D d1 = t[k - 1] - t[k - 2], d2 = t[k] - t[k - 1];
+        const Vector3D d1 = t[k - 1] - t[k - 2], d2 = t[k] - t[k - 1];
         const double c = d1.dot(d2) / (d1.magnitude() * d2.magnitude());
         worst = std::max(worst, std::acos(std::clamp(c, -1.0, 1.0)) / units::DEG);
     }
@@ -466,6 +473,28 @@ void testClock() {
     CHECK(!clock.live, "real time stayed on without a calendar");
 }
 
+double inclination(const Simulation& sim, const char* name, const char* around) {
+    const Body& body = find(sim, name);
+    const Body& host = find(sim, around);
+    const Vector3D h = (body.position - host.position).cross(body.velocity - host.velocity);
+    return std::acos(h.z / h.magnitude()) / units::DEG;
+}
+
+void testInclination() {
+    Simulation sim;
+    sim.load(Preset::SolarSystem);
+    const double mercury = inclination(sim, "Mercury", "Sun");
+    const double moon = inclination(sim, "Moon", "Earth");
+    std::printf("  at J2000: Mercury %.5f deg, Moon %.5f deg\n", mercury, moon);
+    CHECK(std::abs(mercury - 7.00498) < 1e-3, "Mercury's orbit is tilted %.5f deg, expected 7.00498", mercury);
+    CHECK(std::abs(moon - 5.1454) < 1e-3, "the Moon's orbit is tilted %.5f deg, expected 5.1454", moon);
+
+    while (sim.time() < 10.0 * units::DAYS_PER_YEAR) sim.step();
+    const double later = inclination(sim, "Mercury", "Sun");
+    std::printf("  after 10 years: Mercury %.5f deg\n", later);
+    CHECK(std::abs(later - 7.00498) < 0.01, "Mercury's orbit tilted to %.5f deg in 10 years", later);
+}
+
 struct Test {
     const char* name;
     void (*run)();
@@ -490,6 +519,7 @@ const Test TESTS[] = {
     {"ias15_head_on_merge", testIas15HeadOnMerge},
     {"ias15_guard", testIas15Guard},
     {"crowded_close_pass", testCrowdedClosePass},
+    {"inclination", testInclination},
 };
 
 }

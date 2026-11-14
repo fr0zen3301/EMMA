@@ -1,6 +1,6 @@
 #pragma once
 #include "emma/Body.hpp"
-#include "emma/QuadTree.hpp"
+#include "emma/Octree.hpp"
 #include <cstddef>
 #include <vector>
 
@@ -21,7 +21,7 @@ public:
     double potentialEnergy(const std::vector<Body>& bodies) const;
 
 private:
-    QuadTree tree;
+    Octree tree;
 };
 
 }

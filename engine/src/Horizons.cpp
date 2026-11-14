@@ -15,7 +15,7 @@ namespace {
 // barycenters, which matches the system masses EMMA uses for them
 const char* const COMMANDS[SOLAR_BODY_COUNT] = {"10", "199", "299", "399", "301", "4", "5", "6", "7", "8"};
 
-const char* const CACHE_HEADER = "EMMA Horizons cache v1";
+const char* const CACHE_HEADER = "EMMA Horizons cache v2";
 
 std::string trim(const std::string& s) {
     const std::size_t first = s.find_first_not_of(" \t\r\n");
@@ -268,7 +268,7 @@ bool parseReply(const std::string& json, long status, std::string& output, std::
     return true;
 }
 
-bool parseStateVector(const std::string& text, Vector2D& position, Vector2D& velocity, std::string& error) {
+bool parseStateVector(const std::string& text, Vector3D& position, Vector3D& velocity, std::string& error) {
     const std::size_t soe = text.find("$$SOE");
     const std::size_t eoe = text.find("$$EOE");
     if (soe == std::string::npos || eoe == std::string::npos || eoe < soe) {
@@ -296,8 +296,8 @@ bool parseStateVector(const std::string& text, Vector2D& position, Vector2D& vel
             error = "unexpected row in the Horizons table: " + t.substr(0, 80);
             return false;
         }
-        position = Vector2D(v[0], v[1]);
-        velocity = Vector2D(v[3], v[4]);
+        position = Vector3D(v[0], v[1], v[2]);
+        velocity = Vector3D(v[3], v[4], v[5]);
         return true;
     }
     error = "Horizons returned an empty table";
@@ -341,7 +341,8 @@ std::optional<SolarSnapshot> loadCache(const std::filesystem::path& file) {
     SolarSnapshot s;
     if (!(in >> s.julianDay)) return std::nullopt;
     for (std::size_t i = 0; i < SOLAR_BODY_COUNT; ++i) {
-        if (!(in >> s.position[i].x >> s.position[i].y >> s.velocity[i].x >> s.velocity[i].y))
+        if (!(in >> s.position[i].x >> s.position[i].y >> s.position[i].z >> s.velocity[i].x >> s.velocity[i].y >>
+              s.velocity[i].z))
             return std::nullopt;
     }
     return s;
@@ -354,7 +355,8 @@ void saveCache(const std::filesystem::path& file, const SolarSnapshot& s) {
     out.precision(17);
     out << s.julianDay << '\n';
     for (std::size_t i = 0; i < SOLAR_BODY_COUNT; ++i)
-        out << s.position[i].x << ' ' << s.position[i].y << ' ' << s.velocity[i].x << ' ' << s.velocity[i].y << '\n';
+        out << s.position[i].x << ' ' << s.position[i].y << ' ' << s.position[i].z << ' ' << s.velocity[i].x << ' '
+            << s.velocity[i].y << ' ' << s.velocity[i].z << '\n';
 }
 
 }

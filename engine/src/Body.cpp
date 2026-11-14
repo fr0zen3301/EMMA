@@ -28,12 +28,12 @@ double mainSequenceLuminosity(double m) {
 
 } // namespace
 
-Body::Body(double m, const Vector2D& pos, const Vector2D& vel)
+Body::Body(double m, const Vector3D& pos, const Vector3D& vel)
     : mass(m), radius(radiusForMass(m)), position(pos), velocity(vel),
       previousPosition(pos), color(colorForMass(m)) {}
 
 Body::Body(std::string n, std::string k, double m, double r, Rgb c,
-           const Vector2D& pos, const Vector2D& vel)
+           const Vector3D& pos, const Vector3D& vel)
     : mass(m), radius(r), position(pos), velocity(vel), previousPosition(pos),
       color(c), name(std::move(n)), kind(std::move(k)) {}
 

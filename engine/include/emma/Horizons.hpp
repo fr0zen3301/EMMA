@@ -27,8 +27,8 @@ std::string requestUrl(const char* command, double julianDay);
 // error holds the "error" or "message" field, or a note on the HTTP status
 bool parseReply(const std::string& json, long status, std::string& output, std::string& error);
 
-// Reads the first row of a Horizons VECTORS table (CSV) into the ecliptic plane
-bool parseStateVector(const std::string& text, Vector2D& position, Vector2D& velocity, std::string& error);
+// Reads the first row of a Horizons VECTORS table (CSV), in the J2000 ecliptic frame
+bool parseStateVector(const std::string& text, Vector3D& position, Vector3D& velocity, std::string& error);
 
 // The last download is saved, so later starts on the same day does not need network
 std::filesystem::path defaultCachePath();

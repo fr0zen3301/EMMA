@@ -1,4 +1,4 @@
-#include "emma/QuadTree.hpp"
+#include "emma/Octree.hpp"
 #include "emma/Body.hpp"
 #include "emma/Constants.hpp"
 #include <algorithm>
@@ -12,12 +12,12 @@ namespace {
 constexpr int MAX_DEPTH = 48;
 }
 
-void QuadTree::build(const std::vector<Body>& bodies) {
+void Octree::build(const std::vector<Body>& bodies) {
     source = &bodies;
     nodes.clear();
 
     bool any = false;
-    Vector2D lo, hi;
+    Vector3D lo, hi;
     for (const Body& b : bodies) {
         if (!b.alive) continue;
         if (!any) {
@@ -28,15 +28,17 @@ void QuadTree::build(const std::vector<Body>& bodies) {
         }
         lo.x = std::min(lo.x, b.position.x);
         lo.y = std::min(lo.y, b.position.y);
+        lo.z = std::min(lo.z, b.position.z);
         hi.x = std::max(hi.x, b.position.x);
         hi.y = std::max(hi.y, b.position.y);
+        hi.z = std::max(hi.z, b.position.z);
     }
     if (!any) return;
 
     Node root;
     root.center = (lo + hi) * 0.5;
-    root.halfSize = 0.5 * std::max(hi.x - lo.x, hi.y - lo.y) * 1.0001 + 1e-12;
-    nodes.reserve(4 * bodies.size() + 1);
+    root.halfSize = 0.5 * std::max({hi.x - lo.x, hi.y - lo.y, hi.z - lo.z}) * 1.0001 + 1e-12;
+    nodes.reserve(8 * bodies.size() + 1);
     nodes.push_back(root);
 
     for (std::size_t i = 0; i < bodies.size(); ++i) {
@@ -44,29 +46,29 @@ void QuadTree::build(const std::vector<Body>& bodies) {
     }
 }
 
-int QuadTree::quadrantOf(const Node& node, const Vector2D& p) {
+int Octree::octantOf(const Node& node, const Vector3D& p) {
     int q = 0;
     if (p.x >= node.center.x) q += 1;
     if (p.y >= node.center.y) q += 2;
+    if (p.z >= node.center.z) q += 4;
     return q;
 }
 
-void QuadTree::subdivide(int n) {
-    const Vector2D c = nodes[n].center;
+void Octree::subdivide(int n) {
+    const Vector3D c = nodes[n].center;
     const double h = 0.5 * nodes[n].halfSize;
     const int first = static_cast<int>(nodes.size());
-    const Vector2D offsets[4] = {Vector2D(-h, -h), Vector2D(h, -h), Vector2D(-h, h), Vector2D(h, h)};
-    for (const Vector2D& o : offsets) {
+    for (int q = 0; q < 8; ++q) {
         Node child;
-        child.center = c + o;
+        child.center = c + Vector3D(q & 1 ? h : -h, q & 2 ? h : -h, q & 4 ? h : -h);
         child.halfSize = h;
         nodes.push_back(child);  // may reallocate: only indices are held across this call
     }
     nodes[n].firstChild = first;
 }
 
-void QuadTree::insert(int n, int bi, int depth) {
-    const Vector2D p = (*source)[bi].position;
+void Octree::insert(int n, int bi, int depth) {
+    const Vector3D p = (*source)[bi].position;
     const double m = (*source)[bi].mass;
 
     if (nodes[n].firstChild < 0) {
@@ -89,7 +91,7 @@ void QuadTree::insert(int n, int bi, int depth) {
         nodes[n].body = -1;
         subdivide(n);
         if (resident >= 0) {
-            const int q = quadrantOf(nodes[n], (*source)[resident].position);
+            const int q = octantOf(nodes[n], (*source)[resident].position);
             insert(nodes[n].firstChild + q, resident, depth + 1);
         }
     }
@@ -100,15 +102,15 @@ void QuadTree::insert(int n, int bi, int depth) {
         node.com = (node.com * node.mass + p * m) / total;
         node.mass = total;
     }
-    const int q = quadrantOf(nodes[n], p);
+    const int q = octantOf(nodes[n], p);
     insert(nodes[n].firstChild + q, bi, depth + 1);
 }
 
-Vector2D QuadTree::acceleration(std::size_t self, double theta, double softeningSq) const {
-    Vector2D acc;
+Vector3D Octree::acceleration(std::size_t self, double theta, double softeningSq) const {
+    Vector3D acc;
     if (nodes.empty()) return acc;
 
-    const Vector2D p = (*source)[self].position;
+    const Vector3D p = (*source)[self].position;
     const int selfIndex = static_cast<int>(self);
     const double theta2 = theta * theta;
 
@@ -119,7 +121,7 @@ Vector2D QuadTree::acceleration(std::size_t self, double theta, double softening
         stack.pop_back();
         if (node.mass == 0.0 || node.body == selfIndex) continue;
 
-        const Vector2D d = node.com - p;
+        const Vector3D d = node.com - p;
         const double dist2 = d.lengthSquared();
         const double size = 2.0 * node.halfSize;
 
@@ -130,7 +132,7 @@ Vector2D QuadTree::acceleration(std::size_t self, double theta, double softening
             if (r2 <= 0.0) continue;
             acc += d * (units::G * node.mass / (r2 * std::sqrt(r2)));
         } else {
-            for (int q = 0; q < 4; ++q) stack.push_back(node.firstChild + q);
+            for (int q = 0; q < 8; ++q) stack.push_back(node.firstChild + q);
         }
     }
     return acc;

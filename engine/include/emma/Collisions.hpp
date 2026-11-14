@@ -1,13 +1,13 @@
 #pragma once
 #include "emma/Body.hpp"
-#include "emma/Vector2D.hpp"
+#include "emma/Vector3D.hpp"
 #include <vector>
 
 namespace emma {
 
 // The ring shown where two bodies merged
 struct MergeFlash {
-    Vector2D position;
+    Vector3D position;
     float age = 0.f;  // seconds of real time
 };
 

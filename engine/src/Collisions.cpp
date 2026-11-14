@@ -9,11 +9,11 @@ namespace {
 
 // Did a and b touch during the last step?
 bool sweptContact(const Body& a, const Body& b) {
-    const Vector2D start = b.previousPosition - a.previousPosition;
-    const Vector2D motion = (b.position - a.position) - start;
+    const Vector3D start = b.previousPosition - a.previousPosition;
+    const Vector3D motion = (b.position - a.position) - start;
     const double mm = motion.lengthSquared();
     const double t = mm > 0.0 ? std::clamp(-start.dot(motion) / mm, 0.0, 1.0) : 0.0;
-    const Vector2D closest = start + motion * t;
+    const Vector3D closest = start + motion * t;
     const double reach = a.radius + b.radius;
     return closest.lengthSquared() <= reach * reach;
 }

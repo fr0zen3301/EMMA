@@ -136,7 +136,7 @@ void Renderer::drawFlashes(sf::RenderTarget& target, const Camera& camera,
     }
 }
 
-void Renderer::drawPath(sf::RenderTarget& target, const Camera& camera, const std::vector<Vector2D>& path,
+void Renderer::drawPath(sf::RenderTarget& target, const Camera& camera, const std::vector<Vector3D>& path,
                         Rgb color) {
     if (path.size() < 2) return;
     // Every other segment, so the line is dashed. The points are equally spaced in

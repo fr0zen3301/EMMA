@@ -1,6 +1,6 @@
 #pragma once
 #include "emma/Integrator.hpp"
-#include "emma/Vector2D.hpp"
+#include "emma/Vector3D.hpp"
 #include <vector>
 
 namespace emma {
@@ -23,7 +23,7 @@ private:
     void piece(World& world, Gravity& gravity, double h);
     double dynamicalTime(const std::vector<Body>& bodies) const;
 
-    std::vector<Vector2D> oldAcceleration;
+    std::vector<Vector3D> oldAcceleration;
     bool stale = true;       // accelerations need computing before the next drift
     bool jerkValid = false;  // oldAcceleration holds the previous piece's accelerations
     double lastPiece = 0.0;  // days, the previous piece's length

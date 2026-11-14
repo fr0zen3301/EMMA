@@ -118,7 +118,8 @@ int main(int argc, char** argv) {
     float behindTimer = 0.f;
     float energyTimer = ENERGY_REFRESH;  // refresh on the first frame
     unsigned long long baselineChange = ~0ull;
-    double baseEnergy = 0.0, baseMomentum = 0.0, energyDrift = 0.0, momentumDrift = 0.0;
+    double baseEnergy = 0.0, energyDrift = 0.0, momentumDrift = 0.0;
+    Vector3D baseMomentum;
     std::vector<float> driftHistory;
 
     auto inViewport = [&](sf::Vector2f p) {
@@ -132,11 +133,11 @@ int main(int argc, char** argv) {
     };
     // Launch velocity in the inertial frame. Speed and direction are relative to the
     // body that dominates gravity at the spawn point, so a launch near Earth moves with Earth
-    auto launchVelocity = [&](const Vector2D& at, double speedKms, double angle) -> Vector2D {
+    auto launchVelocity = [&](const Vector3D& at, double speedKms, double angle) -> Vector3D {
         if (state.autoOrbit) return sim.circularVelocity(at);
         const int host = sim.dominantBody(at);
-        const Vector2D base = host >= 0 ? sim.getBodies()[static_cast<std::size_t>(host)].velocity : Vector2D();
-        return base + Vector2D(std::cos(angle), std::sin(angle)) * (speedKms * units::KMS_TO_AU_PER_DAY);
+        const Vector3D base = host >= 0 ? sim.getBodies()[static_cast<std::size_t>(host)].velocity : Vector3D();
+        return base + Vector3D(std::cos(angle), std::sin(angle)) * (speedKms * units::KMS_TO_AU_PER_DAY);
     };
     auto spawnMass = [&]() { return std::pow(10.0, static_cast<double>(state.massExponent)); };
 
@@ -167,7 +168,7 @@ int main(int argc, char** argv) {
             } else if (const auto* release = event->getIf<sf::Event::MouseButtonReleased>()) {
                 if (release->button == sf::Mouse::Button::Left) {
                     if (pressing) {
-                        const Vector2D at = camera.toWorld(pressAt);
+                        const Vector3D at = camera.toWorld(pressAt);
                         double speed = state.speedKms, angle = state.angle;
                         if (dragging) dragLaunch(sf::Vector2f(release->position), speed, angle);
                         sim.addBody(spawnMass(), at, launchVelocity(at, speed, angle));
@@ -300,7 +301,7 @@ int main(int argc, char** argv) {
         if (energyTimer >= ENERGY_REFRESH) {
             energyTimer = 0.f;
             const double energy = sim.totalEnergy();
-            const double momentum = sim.angularMomentum();
+            const Vector3D momentum = sim.angularMomentum();
             if (sim.changeCount() != baselineChange) {  // bodies added, merged or loaded
                 baselineChange = sim.changeCount();
                 baseEnergy = energy;
@@ -308,7 +309,8 @@ int main(int argc, char** argv) {
                 driftHistory.clear();
             }
             energyDrift = baseEnergy != 0.0 ? (energy - baseEnergy) / std::abs(baseEnergy) : 0.0;
-            momentumDrift = baseMomentum != 0.0 ? (momentum - baseMomentum) / std::abs(baseMomentum) : 0.0;
+            const double baseMomentumSize = baseMomentum.magnitude();
+            momentumDrift = baseMomentumSize > 0.0 ? (momentum - baseMomentum).magnitude() / baseMomentumSize : 0.0;
             driftHistory.push_back(static_cast<float>(energyDrift));
             if (driftHistory.size() > DRIFT_HISTORY) driftHistory.erase(driftHistory.begin());
         }
@@ -324,10 +326,10 @@ int main(int argc, char** argv) {
         const bool hovering = !pressing && !panning && inViewport(mouse);
         if (pressing || hovering) {
             const sf::Vector2f anchor = pressing ? pressAt : mouse;
-            const Vector2D at = camera.toWorld(anchor);
+            const Vector3D at = camera.toWorld(anchor);
             double speed = state.speedKms, angle = state.angle;
             if (dragging) dragLaunch(mouse, speed, angle);
-            const Vector2D velocity = launchVelocity(at, speed, angle);
+            const Vector3D velocity = launchVelocity(at, speed, angle);
             const double mass = spawnMass();
             const Rgb color = Body::colorForMass(mass);
 
@@ -337,11 +339,11 @@ int main(int argc, char** argv) {
 
             // Arrow for the velocity relative to the dominant body
             const int host = sim.dominantBody(at);
-            const Vector2D relative =
-                velocity - (host >= 0 ? sim.getBodies()[static_cast<std::size_t>(host)].velocity : Vector2D());
+            const Vector3D relative =
+                velocity - (host >= 0 ? sim.getBodies()[static_cast<std::size_t>(host)].velocity : Vector3D());
             const double kms = relative.magnitude() / units::KMS_TO_AU_PER_DAY;
             if (kms > 0.05) {
-                const Vector2D dir = relative / relative.magnitude();
+                const Vector3D dir = relative / relative.magnitude();
                 const double px = kms / KMS_PER_PIXEL;
                 const sf::Vector2f tip =
                     anchor + sf::Vector2f(static_cast<float>(dir.x * px), static_cast<float>(-dir.y * px));

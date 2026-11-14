@@ -42,7 +42,7 @@ public:
     void limitStep(double maxDays);
     void updateEffects(float realDt);  // merge flashes
 
-    void addBody(double mass, const Vector2D& position, const Vector2D& velocity);
+    void addBody(double mass, const Vector3D& position, const Vector3D& velocity);
 
     // Swaps the integrator. The new one starts knowing nothing about the bodies.
     // Above DIRECT_LIMIT bodies, one that needs exact forces (IAS15) gives way to Verlet
@@ -51,14 +51,14 @@ public:
 
     // The body whose gravity dominates at p: the smallest Laplace sphere of
     // influence containing p, otherwise the strongest pull. -1 with no bodies
-    int dominantBody(const Vector2D& p, int exclude = -1) const;
+    int dominantBody(const Vector3D& p, int exclude = -1) const;
     // Velocity for a circular, prograde orbit around the dominant body at p
-    Vector2D circularVelocity(const Vector2D& p) const;
+    Vector3D circularVelocity(const Vector3D& p) const;
     // Where a massless body starting at p with velocity v would go
-    std::vector<Vector2D> predictPath(const Vector2D& p, const Vector2D& v) const;
+    std::vector<Vector3D> predictPath(const Vector3D& p, const Vector3D& v) const;
 
     double totalEnergy() const;      // Msun AU^2 / day^2
-    double angularMomentum() const;  // Msun AU^2 / day, about the origin
+    Vector3D angularMomentum() const;  // Msun AU^2 / day, about the origin
 
     const World& getWorld() const { return world; }
     const std::vector<Body>& getBodies() const { return world.bodies; }
@@ -76,7 +76,7 @@ public:
     std::vector<MergeFlash> flashes;
 
 private:
-    int strongestPull(const Vector2D& p, int exclude) const;
+    int strongestPull(const Vector3D& p, int exclude) const;
     void checkIntegrator();  // Verlet takes over from IAS15 above DIRECT_LIMIT bodies
 
     World world;
