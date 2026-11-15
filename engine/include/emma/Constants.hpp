@@ -16,6 +16,10 @@ constexpr double SECONDS_PER_DAY = 86400.0;
 constexpr double DAYS_PER_YEAR = 365.25;           // Julian year
 constexpr double KMS_TO_AU_PER_DAY = SECONDS_PER_DAY / KM_PER_AU;
 
+constexpr double SPEED_OF_LIGHT_KMS = 299792.458;  // exact by the definition of the metre
+constexpr double AU_PER_PARSEC = 648000.0 / PI;    // exact: about 206,265 AU
+constexpr double AU_PER_LIGHT_YEAR = SPEED_OF_LIGHT_KMS * SECONDS_PER_DAY * DAYS_PER_YEAR / KM_PER_AU;  // about 63,241 AU
+
 constexpr double EARTH_MASS = 1.0 / 332946.0487;   // Msun, IAU 2009
 constexpr double JUPITER_MASS = 1.0 / 1047.348644; // Msun, IAU 2009
 constexpr double SOLAR_RADIUS_AU = 695700.0 / KM_PER_AU;  // IAU 2015 nominal

@@ -22,6 +22,10 @@ struct UiState {
     std::string follow;           // the named body the camera follows, empty for none
     bool galaxyView = false;      // draw the solar system moving through the Galaxy
     float sunSpeedKms = static_cast<float>(emma::galaxy::sunVelocityKms().magnitude());  // its speed there
+    int holeLook = 1;             // Sgr A*: 0 the gas flow it really has, 1 a thin disk, 2 nothing
+    bool holeBendLight = true;
+    bool holeDoppler = true;
+    float holeBrightness = 0.f;   // log2 of the exposure
 
     bool clearRequested = false;
     bool resetRequested = false;
@@ -30,6 +34,7 @@ struct UiState {
     int presetRequested = -1;
     int integratorRequested = -1;
     bool retryFetchRequested = false;
+    bool goToHoleRequested = false;
 };
 
 struct Stats {
@@ -46,6 +51,9 @@ struct Stats {
 
 namespace ui {
 
+// The name Follow uses for the black hole at the Galactic center, which isn't a body
+inline constexpr const char* SGR_A = "Sgr A*";
+
 void applyTheme();
 void loadFont(const std::filesystem::path& exeDir);
 
@@ -55,8 +63,16 @@ void drawStatusBar(const emma::Simulation& sim, const Camera& camera, const Scen
                    const emma::Clock& clock, float y, float width, float height);
 void drawLabels(const Camera& camera, const SceneFrame& frame, const std::vector<emma::Body>& bodies);
 void drawBodyTooltip(const emma::Simulation& sim, const Camera& camera, const SceneFrame& frame, sf::Vector2f mouse);
+// The body under a pixel, or -1. Where markers overlap, a body hidden inside a heavier
+// one's marker can't be picked, the same rule that hides it when drawing
+int bodyAt(const std::vector<emma::Body>& bodies, const Camera& camera, const SceneFrame& frame, sf::Vector2f at);
 // A small muted label next to a point in scene coordinates
 void drawTag(const Camera& camera, const emma::Vector3D& at, const char* text);
+// Sgr A*'s label, next to where it was drawn (pixels) with its radius
+void drawBlackHoleLabel(const Camera& camera, sf::Vector2f at, float radius);
+// Sgr A*'s tooltip, when the mouse is over it. False when it isn't
+bool drawBlackHoleTooltip(sf::Vector2f at, float radius, sf::Vector2f mouse, double sunDistance, double eyeDistance,
+                          bool rayTraced);
 void drawLaunchReadout(sf::Vector2f at, double speedKms, double angleRad);
 
 std::string formatMass(double massSolar);

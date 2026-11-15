@@ -2,6 +2,7 @@
 #include "Renderer.hpp"
 #include "SceneFrame.hpp"
 #include "Ui.hpp"
+#include "emma/BlackHole.hpp"
 #include "emma/Calendar.hpp"
 #include "emma/Clock.hpp"
 #include "emma/Constants.hpp"
@@ -36,6 +37,12 @@ constexpr double MAX_LAUNCH_KMS = 200.0;
 constexpr float CLICK_SLOP = 4.f;           // px a press can move and still count as a click
 constexpr double ORBIT_RATE = 0.005;        // radians the view turns per px of right-drag
 const sf::Color ARROW_COLOR(217, 207, 255);
+constexpr double HOLE_VIEW_DISTANCE = 28.0;  // Rs: where "Go to Sgr A*" puts the eye, close enough to see light bend
+constexpr double HOLE_MIN_DISTANCE = 3.0;    // Rs: the closest the eye gets while following Sgr A*
+constexpr double HOLE_VIEW_TILT = 7.0;       // degrees above the disk that "Go to Sgr A*" looks from
+constexpr float DOUBLE_CLICK_SECONDS = 0.4f; // the most time between the two clicks of a double-click
+constexpr float GLIDE_SECONDS = 0.4f;        // how long the view takes to glide to a body you start following
+constexpr double FOLLOW_MIN_RADII = 1.15;    // the closest the eye gets to a followed body, in its radii
 } // namespace
 
 int main(int argc, char** argv) {
@@ -56,6 +63,7 @@ int main(int argc, char** argv) {
 
     Simulation sim;
     Renderer renderer;
+    renderer.setAssetFolder(exeDir);
     Camera camera;
     SceneFrame frame;
     bool wasGalactic = false;
@@ -117,6 +125,13 @@ int main(int argc, char** argv) {
     bool pressing = false, dragging = false, panning = false, orbiting = false;
     sf::Vector2f pressAt, mouse, lastDrag;
     float zoomVelocity = 0.f;
+    bool pressOnBody = false;          // the left press landed on a body
+    bool clickedBody = false;          // and the last click did too, for double-clicks
+    sf::Clock sinceClick;
+    sf::Vector2f lastClickAt;
+    std::optional<Vector3D> glideFrom;  // where the view was when it started gliding to a followed body
+    float glideTime = 0.f;
+    Renderer::BlackHoleShot lastHole;   // where Sgr A* was drawn last frame, for picking it
 
     // Timing and diagnostics
     sf::Clock frameClock;
@@ -151,6 +166,38 @@ int main(int argc, char** argv) {
     };
     auto spawnMass = [&]() { return std::pow(10.0, static_cast<double>(state.massExponent)); };
 
+    // The name Follow uses for whatever is under a pixel: a named body or Sgr A*. Empty for
+    // nothing, and for bodies you added, which have no name
+    auto nameUnder = [&](sf::Vector2f p) -> std::string {
+        const std::vector<Body>& bodies = sim.getBodies();
+        const int i = ui::bodyAt(bodies, camera, frame, p);
+        if (i >= 0) return bodies[static_cast<std::size_t>(i)].name;
+        if (lastHole.visible) {
+            const float reach = std::max(lastHole.radius, 8.f);
+            const sf::Vector2f d = p - lastHole.at;
+            if (d.x * d.x + d.y * d.y <= reach * reach) return ui::SGR_A;
+        }
+        return {};
+    };
+    // Follows something new, gliding there instead of jumping
+    auto startFollowing = [&](const std::string& name) {
+        if (name.empty() || state.follow == name) return;
+        state.follow = name;
+        glideFrom = camera.target;
+        glideTime = 0.f;
+    };
+    // Points the view at a followed body, partway there while gliding
+    auto aimAt = [&](const Vector3D& p, float dt) {
+        if (!glideFrom) {
+            camera.target = p;
+            return;
+        }
+        glideTime += dt;
+        const double k = std::min(1.0, static_cast<double>(glideTime / GLIDE_SECONDS));
+        camera.target = *glideFrom + (p - *glideFrom) * (k * k * (3.0 - 2.0 * k));
+        if (k >= 1.0) glideFrom.reset();
+    };
+
     while (window.isOpen()) {
         // ------------------------------------------------------------------ events
         while (const std::optional<sf::Event> event = window.pollEvent()) {
@@ -161,8 +208,11 @@ int main(int argc, char** argv) {
             } else if (const auto* resized = event->getIf<sf::Event::Resized>()) {
                 layout(resized->size);
             } else if (const auto* wheel = event->getIf<sf::Event::MouseWheelScrolled>()) {
-                if (wheel->wheel == sf::Mouse::Wheel::Vertical && inViewport(sf::Vector2f(wheel->position)))
+                if (wheel->wheel == sf::Mouse::Wheel::Vertical && inViewport(sf::Vector2f(wheel->position))) {
+                    // Scrolling in over a body follows it, so the zoom heads straight for it
+                    if (wheel->delta > 0.f) startFollowing(nameUnder(sf::Vector2f(wheel->position)));
                     zoomVelocity += wheel->delta;
+                }
             } else if (const auto* press = event->getIf<sf::Event::MouseButtonPressed>()) {
                 const sf::Vector2f at(press->position);
                 if (!inViewport(at)) continue;
@@ -170,6 +220,7 @@ int main(int argc, char** argv) {
                     pressing = true;
                     dragging = false;
                     pressAt = at;
+                    pressOnBody = !nameUnder(at).empty();
                 } else if (press->button == sf::Mouse::Button::Right ||
                            press->button == sf::Mouse::Button::Middle) {
                     const bool shift = sf::Keyboard::isKeyPressed(sf::Keyboard::Key::LShift) ||
@@ -180,12 +231,29 @@ int main(int argc, char** argv) {
                 }
             } else if (const auto* release = event->getIf<sf::Event::MouseButtonReleased>()) {
                 if (release->button == sf::Mouse::Button::Left) {
-                    if (pressing && !frame.galactic) {
+                    if (pressing && pressOnBody && !dragging) {
+                        // A click on a body picks it instead of placing a new body on top of it.
+                        // A second click on it soon after follows it
+                        const sf::Vector2f at(release->position);
+                        const sf::Vector2f d = at - lastClickAt;
+                        const bool twice = clickedBody &&
+                                           sinceClick.getElapsedTime().asSeconds() < DOUBLE_CLICK_SECONDS &&
+                                           d.x * d.x + d.y * d.y < 4.f * CLICK_SLOP * CLICK_SLOP;
+                        if (twice) {
+                            startFollowing(nameUnder(at));
+                            clickedBody = false;
+                        } else {
+                            clickedBody = true;
+                            lastClickAt = at;
+                            sinceClick.restart();
+                        }
+                    } else if (pressing && !frame.galactic) {
                         if (const std::optional<Vector3D> at = camera.pick(pressAt)) {
                             double speed = state.speedKms, angle = state.angle;
                             if (dragging) dragLaunch(sf::Vector2f(release->position), speed, angle);
                             sim.addBody(spawnMass(), *at, launchVelocity(*at, speed, angle));
                         }
+                        clickedBody = false;
                     }
                     pressing = false;
                     dragging = false;
@@ -198,6 +266,7 @@ int main(int argc, char** argv) {
                 if (panning) {
                     camera.pan(lastDrag, at);
                     state.follow.clear();  // panning moves the view off the followed body
+                    glideFrom.reset();
                     lastDrag = at;
                 } else if (orbiting) {
                     camera.orbit(-(at.x - lastDrag.x) * ORBIT_RATE, (at.y - lastDrag.y) * ORBIT_RATE);
@@ -320,6 +389,21 @@ int main(int argc, char** argv) {
             state.retryFetchRequested = false;
             if (!fetch.valid()) startFetch();
         }
+        if (state.goToHoleRequested) {
+            state.goToHoleRequested = false;
+            if (sim.preset() == Preset::SolarSystem) {
+                state.follow = ui::SGR_A;
+                glideFrom.reset();  // a jump across the Galaxy, not a glide
+                camera.distance = HOLE_VIEW_DISTANCE * blackhole::schwarzschildRadiusAU(galaxy::SGR_A_MASS);
+                // Turn the view so the gas's axis points up the screen, then tip it so the eye
+                // sits a few degrees above the disk: the disk lies flat across the picture
+                Vector3D axis = frame.fromGalactic(galaxy::sgrASpinAxis());
+                if (axis.z < 0.0) axis = -axis;
+                const double upright = std::acos(std::min(1.0, axis.z));  // the pitch that points the axis up
+                const double tilt = HOLE_VIEW_TILT * units::DEG;
+                camera.setAngles(std::atan2(-axis.x, axis.y), upright > tilt ? upright - tilt : upright + tilt);
+            }
+        }
 
         // ------------------------------------------------------------------ physics
         const emma::Clock::Report ran = clock.run(sim, static_cast<double>(frameDt));
@@ -344,13 +428,27 @@ int main(int argc, char** argv) {
         }
 
         // Keep the followed body in the middle. It may be gone after a merge or a new preset
-        if (!state.follow.empty()) {
+        if (state.follow == ui::SGR_A) {
+            if (sim.preset() == Preset::SolarSystem) {
+                aimAt(frame.galacticCenter(), frameDt);
+                camera.distance = std::max(camera.distance,
+                                           HOLE_MIN_DISTANCE * blackhole::schwarzschildRadiusAU(galaxy::SGR_A_MASS));
+            } else {
+                state.follow.clear();
+            }
+        } else if (!state.follow.empty()) {
             const std::vector<Body>& bodies = sim.getBodies();
             const auto followed = std::find_if(bodies.begin(), bodies.end(),
                                                [&state](const Body& b) { return b.name == state.follow; });
-            if (followed != bodies.end()) camera.target = frame.place(followed->position);
-            else state.follow.clear();
+            if (followed != bodies.end()) {
+                aimAt(frame.place(followed->position), frameDt);
+                // Zooming in stops just outside the surface
+                camera.distance = std::max(camera.distance, FOLLOW_MIN_RADII * followed->radius);
+            } else {
+                state.follow.clear();
+            }
         }
+        if (state.follow.empty()) glideFrom.reset();
 
         // Conservation check, a few times per second
         energyTimer += frameDt;
@@ -372,16 +470,27 @@ int main(int argc, char** argv) {
         }
 
         // ------------------------------------------------------------------ drawing
-        window.clear(sf::Color(4, 4, 9));
+        window.clear(Renderer::SPACE_COLOR);
         renderer.drawStarfield(window, camera, frame);
+        // Sgr A*: only the solar system knows where the Galactic center is. Up close it's
+        // ray traced over the starfield, so it comes before everything else
+        Renderer::BlackHoleShot hole;
+        if (sim.preset() == Preset::SolarSystem) {
+            const Renderer::BlackHoleLook look{state.holeLook, state.holeBendLight, state.holeDoppler,
+                                               state.holeBrightness};
+            hole = renderer.drawBlackHole(window, camera, frame, look);
+        }
+        lastHole = hole;
         if (state.showGrid) renderer.drawGrid(window, camera);
         if (state.showTrails) renderer.drawTrails(window, camera, frame, sim.getBodies());
-        renderer.drawBodies(window, camera, frame, sim.getBodies());
+        // The planets' surfaces turn with the date; without a calendar, J2000 stands in
+        renderer.drawBodies(window, camera, frame, sim.getBodies(),
+                            sim.hasCalendar() ? sim.epoch() + sim.time() : units::J2000_JD);
         renderer.drawFlashes(window, camera, frame, sim.flashes);
         if (frame.galactic && frame.velocity.lengthSquared() > 0.0) {
-            // Which way the solar system is heading, from its barycenter
+            // Which way the solar system is heading now, from its barycenter
             const Vector3D from = frame.place(Vector3D());
-            const Vector3D to = from + frame.velocity.normalized() * (0.6 * camera.distance);
+            const Vector3D to = from + frame.heading().normalized() * (0.6 * camera.distance);
             renderer.drawRay(window, camera, from, to, sf::Color(217, 207, 255, 140));
             ui::drawTag(camera, to, "Sun's direction of motion");
         }
@@ -389,8 +498,10 @@ int main(int argc, char** argv) {
         // Preview of the next body: ghost, velocity arrow and predicted path
         const bool hovering = !pressing && !panning && !orbiting && inViewport(mouse);
         const sf::Vector2f anchor = pressing ? pressAt : mouse;
+        // No preview over a body: a click there picks the body instead of placing one
+        const bool onBody = pressing ? pressOnBody && !dragging : hovering && !nameUnder(mouse).empty();
         const std::optional<Vector3D> at =
-            (pressing || hovering) && !frame.galactic ? camera.pick(anchor) : std::nullopt;
+            (pressing || hovering) && !onBody && !frame.galactic ? camera.pick(anchor) : std::nullopt;
         if (at) {
             double speed = state.speedKms, angle = state.angle;
             if (dragging) dragLaunch(mouse, speed, angle);
@@ -423,7 +534,15 @@ int main(int argc, char** argv) {
         }
 
         if (state.showLabels) ui::drawLabels(camera, frame, sim.getBodies());
-        if (hovering) ui::drawBodyTooltip(sim, camera, frame, mouse);
+        if (state.showLabels && hole.visible) ui::drawBlackHoleLabel(camera, hole.at, hole.radius);
+        if (hovering) {
+            double sunDistance = galaxy::R0_AU;
+            for (const Body& b : sim.getBodies())
+                if (b.name == "Sun") sunDistance = (frame.place(b.position) - frame.galacticCenter()).magnitude();
+            const bool overHole = hole.visible && ui::drawBlackHoleTooltip(hole.at, hole.radius, mouse, sunDistance,
+                                                                           hole.eyeDistance, hole.rayTraced);
+            if (!overHole) ui::drawBodyTooltip(sim, camera, frame, mouse);
+        }
 
         ImGui::SFML::Render(window);
         window.display();

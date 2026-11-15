@@ -25,6 +25,18 @@ constexpr double ORBIT_SPEED_KMS = 247.0;   // the Sun's speed along its orbit, 
 constexpr double U_SUN_KMS = 11.1;          // the Sun's drift toward the Galactic center (Schoenrich et al. 2010)
 constexpr double W_SUN_KMS = 7.25;          // and toward the north Galactic pole (Schoenrich et al. 2010)
 
+constexpr double R0_AU = R0_KPC * 1000.0 * units::AU_PER_PARSEC;  // about 1.68 billion AU
+
+constexpr double SGR_A_MASS = 4.3e6;  // Msun, the black hole at the Galactic center (GRAVITY Collaboration)
+
+// Where Sgr A* is, relative to the Sun's starting point, in Galactic coordinates
+inline Vector3D galacticCenter() { return Vector3D(R0_AU, 0.0, 0.0); }
+
+// The axis the gas around Sgr A* turns about, in Galactic coordinates. It's tilted
+// about 35 degrees from the direction to the Sun. The EHT rules out more than 50
+// degrees, and the exact angle isn't known
+inline Vector3D sgrASpinAxis() { return Vector3D(-0.819, 0.574, 0.0).normalized(); }
+
 // A 3x3 rotation. Its inverse is its transpose
 struct Rotation {
     double m[3][3];
@@ -53,16 +65,27 @@ inline Vector3D equatorialToEcliptic(const Vector3D& q) {
 }
 
 // Ecliptic to Galactic in one matrix: the ICRS matrix after the obliquity turn.
-// Worked out once, on first use
+// The table's 10 digits make it a rotation only to about 1e-10, and its transpose
+// undoes it only that well. So the matrix is straightened as it's built: the pole
+// row keeps its direction, the x row loses the small part along the pole, and y is
+// z cross x. Each axis moves by about 1e-10, and the transpose becomes the inverse
+// to the last digit of a double
 inline const Rotation& eclipticToGalactic() {
     static const Rotation rotation = [] {
         const double c = std::cos(OBLIQUITY), s = std::sin(OBLIQUITY);
-        Rotation r{};
+        Vector3D row[3];
         for (int i = 0; i < 3; ++i) {
             const double a = ICRS_TO_GALACTIC[i][0], b = ICRS_TO_GALACTIC[i][1], d = ICRS_TO_GALACTIC[i][2];
-            r.m[i][0] = a;
-            r.m[i][1] = b * c + d * s;
-            r.m[i][2] = -b * s + d * c;
+            row[i] = Vector3D(a, b * c + d * s, -b * s + d * c);
+        }
+        const Vector3D z = row[2].normalized();
+        const Vector3D x = (row[0] - z * row[0].dot(z)).normalized();
+        const Vector3D axes[3] = {x, z.cross(x), z};
+        Rotation r{};
+        for (int i = 0; i < 3; ++i) {
+            r.m[i][0] = axes[i].x;
+            r.m[i][1] = axes[i].y;
+            r.m[i][2] = axes[i].z;
         }
         return r;
     }();
@@ -74,5 +97,24 @@ inline Vector3D toEcliptic(const Vector3D& g) { return eclipticToGalactic().appl
 
 // The Sun's velocity relative to the Galactic center, in Galactic coordinates (km/s)
 inline Vector3D sunVelocityKms() { return Vector3D(U_SUN_KMS, ORBIT_SPEED_KMS, W_SUN_KMS); }
+
+// Where the Sun is t days after time 0, relative to where it was then (AU, Galactic),
+// for a Sun moving at v (AU per day, Galactic) at time 0. The part of v along Galactic
+// rotation carries it around a circle of radius R0 about the Galactic center, which
+// sits at +x. The small drifts toward the center and the pole stay straight lines:
+// they are really slow oscillations, tens of millions of years long.
+// R0 (1 - cos a) is written 2 R0 sin^2(a / 2). They're equal, but for the tiny angles
+// here 1 - cos a would throw away about half the digits
+inline Vector3D sunDisplacement(const Vector3D& v, double t) {
+    const double angle = v.y * t / R0_AU;
+    const double half = std::sin(0.5 * angle);
+    return Vector3D(2.0 * R0_AU * half * half + v.x * t, R0_AU * std::sin(angle), v.z * t);
+}
+
+// The Sun's velocity t days after time 0: the circling part turned through the same angle
+inline Vector3D sunVelocityAt(const Vector3D& v, double t) {
+    const double angle = v.y * t / R0_AU;
+    return Vector3D(v.y * std::sin(angle) + v.x, v.y * std::cos(angle), v.z);
+}
 
 }

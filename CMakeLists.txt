@@ -61,7 +61,8 @@ add_library(emma_core STATIC
     engine/src/Octree.cpp
     engine/src/Calendar.cpp
     engine/src/Horizons.cpp
-    engine/src/Http.cpp)
+    engine/src/Http.cpp
+    engine/src/Spin.cpp)
 target_include_directories(emma_core
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/engine/include
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/engine/src)
@@ -83,10 +84,13 @@ if(MSVC)
         $<$<CONFIG:Release>:/ENTRY:mainCRTStartup>)
 endif()
 
-# Copy the font next to the executable, so EMMA finds it from any working directory
+# Copy the font and the planet textures next to the executable, so EMMA finds them
+# from any working directory
 add_custom_command(TARGET nbody POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
             ${CMAKE_CURRENT_SOURCE_DIR}/fonts $<TARGET_FILE_DIR:nbody>/fonts
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            ${CMAKE_CURRENT_SOURCE_DIR}/textures $<TARGET_FILE_DIR:nbody>/textures
     VERBATIM)
 
 # Physics tests: ctest --test-dir build -C Release --output-on-failure
@@ -96,6 +100,19 @@ target_link_libraries(physics_tests PRIVATE emma_core)
 foreach(test calendar horizons_parse horizons_reply j2000_start earth_year conservation close_pass head_on_merge
              barnes_hut dominant_body trail_smoothness clock ias15_earth_year ias15_conservation
              ias15_close_pass ias15_head_on_merge ias15_guard crowded_close_pass inclination
-             galactic_frame)
+             galactic_frame black_hole_radius black_hole_shadow black_hole_photon_sphere black_hole_bending
+             black_hole_doppler body_spin)
     add_test(NAME ${test} COMMAND physics_tests ${test})
+endforeach()
+
+# View tests: the camera and the scene frame. They're app code, and the camera measures
+# pixels with SFML's vector and rectangle types, so they get their own test program and
+# physics_tests keeps linking only the engine. Those types are header-only, and nothing
+# here opens a window
+add_executable(view_tests tests/view_tests.cpp)
+target_include_directories(view_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/app)
+target_link_libraries(view_tests PRIVATE emma_core SFML::Graphics)
+foreach(test camera_round_trip camera_clip camera_zoom camera_pan camera_pick_misses camera_fit
+             camera_galactic_scale sun_path)
+    add_test(NAME ${test} COMMAND view_tests ${test})
 endforeach()

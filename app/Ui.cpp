@@ -1,5 +1,6 @@
 #include "Ui.hpp"
 #include "Renderer.hpp"
+#include "emma/BlackHole.hpp"
 #include "emma/Calendar.hpp"
 #include "emma/Constants.hpp"
 #include "imgui.h"
@@ -33,6 +34,17 @@ std::string number(double v) {
     const double a = std::abs(v);
     if (a == 0.0 || (a >= 0.01 && a < 10000.0)) return printf_string("%.2f", v);
     return printf_string("%.2e", v);
+}
+
+// Past this many AU, distances read better in parsecs: about half a parsec
+constexpr double PARSEC_FROM_AU = 1e5;
+constexpr double AU_PER_KPC = 1e3 * units::AU_PER_PARSEC;
+
+// A distance in light-years, to go alongside parsecs
+std::string lightYears(double au) {
+    const double ly = au / units::AU_PER_LIGHT_YEAR;
+    if (ly < 10.0) return printf_string("%.1f ly", ly);
+    return printf_string("%.0f ly", ly);
 }
 
 // A left-hand label, with the widget that follows lined up in a column
@@ -244,8 +256,8 @@ void drawSidebar(UiState& st, emma::Clock& clock, const Stats& stats, Preset pre
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Launch on a circular orbit around the body that dominates gravity at that spot");
         ImGui::Checkbox("Show predicted path", &st.showPath);
-        hint("Click to place, or drag to set speed and direction. Speed is measured relative to the "
-             "body that dominates gravity at that spot.");
+        hint("Click empty space to place, or drag to set speed and direction. Speed is measured relative to "
+             "the body that dominates gravity at that spot.");
     }
 
     if (ImGui::CollapsingHeader("View", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -262,6 +274,7 @@ void drawSidebar(UiState& st, emma::Clock& clock, const Stats& stats, Preset pre
             for (const Body& b : bodies) {
                 if (b.isNamed() && ImGui::Selectable(b.name.c_str(), st.follow == b.name)) st.follow = b.name;
             }
+            if (preset == Preset::SolarSystem && ImGui::Selectable(SGR_A, st.follow == SGR_A)) st.follow = SGR_A;
             ImGui::EndCombo();
         }
         if (preset == Preset::SolarSystem) {
@@ -281,8 +294,37 @@ void drawSidebar(UiState& st, emma::Clock& clock, const Stats& stats, Preset pre
                          .c_str());
             }
         }
-        hint("Scroll to zoom, right-drag to turn the view, Shift+right-drag or middle-drag to pan. "
-             "F fits, T looks straight down. Space pauses, N steps, Esc cancels a launch.");
+        hint("Scroll to zoom. Double-click a planet, or scroll in over it, to follow it. Right-drag turns "
+             "the view, Shift+right-drag or middle-drag pans. F fits, T looks straight down. Space pauses, "
+             "N steps, Esc cancels a launch.");
+    }
+
+    if (preset == Preset::SolarSystem && ImGui::CollapsingHeader("Sgr A*")) {
+        if (ImGui::Button("Go to Sgr A*")) st.goToHoleRequested = true;
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Jump to the black hole at the Galactic center, 8.15 kpc away, "
+                              "and look along its disk from just above it");
+        ImGui::RadioButton("Gas flow, as observed", &st.holeLook, 0);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("The thick, dim cloud of hot gas Sgr A* really has, in the EHT's false colors");
+        ImGui::RadioButton("Thin disk, an illustration", &st.holeLook, 1);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("A flat accretion disk, the textbook black hole. Sgr A* doesn't have one, "
+                              "but it shows the bending of light best");
+        ImGui::RadioButton("No disk", &st.holeLook, 2);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Only the background stars, bent around the hole");
+        ImGui::Checkbox("Bend light", &st.holeBendLight);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Untick to see the picture without gravity bending the light");
+        ImGui::SameLine(style.WindowPadding.x + LABEL_WIDTH + 20.f);
+        ImGui::Checkbox("Doppler", &st.holeDoppler);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Gas moving toward you looks brighter and bluer. The film Interstellar left this out");
+        rowLabel("Brightness");
+        ImGui::SetNextItemWidth(-1.f);
+        const std::string exposure = printf_string("%.1fx", std::pow(2.0, static_cast<double>(st.holeBrightness)));
+        ImGui::SliderFloat("##holebrightness", &st.holeBrightness, -2.f, 2.f, exposure.c_str());
+        hint("Up close, every pixel is ray traced: its light is followed backward through the curved space "
+             "around the hole. Farther out, Sgr A* is a marker.");
     }
 
     if (ImGui::CollapsingHeader("Stats", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -326,7 +368,13 @@ void drawStatusBar(const Simulation& sim, const Camera& camera, const SceneFrame
     if (camera.viewport.contains(mouse) && !frame.galactic) {
         if (const std::optional<Vector3D> w = camera.pick(mouse)) {
             ImGui::SameLine(0.f, 28.f);
-            ImGui::TextDisabled("Cursor %.4f, %.4f AU", w->x, w->y);
+            if (viewWidth >= PARSEC_FROM_AU) {  // in the same unit as the view's width
+                const bool kpc = viewWidth >= AU_PER_KPC;
+                const double unit = kpc ? AU_PER_KPC : units::AU_PER_PARSEC;
+                ImGui::TextDisabled("Cursor %.3f, %.3f %s", w->x / unit, w->y / unit, kpc ? "kpc" : "pc");
+            } else {
+                ImGui::TextDisabled("Cursor %.4f, %.4f AU", w->x, w->y);
+            }
         }
     }
     ImGui::SameLine(0.f, 28.f);
@@ -381,28 +429,74 @@ void drawLabels(const Camera& camera, const SceneFrame& frame, const std::vector
     }
 }
 
+void drawBlackHoleLabel(const Camera& camera, sf::Vector2f at, float radius) {
+    if (!camera.viewport.contains(at)) return;
+    ImGui::GetBackgroundDrawList()->AddText(ImVec2(at.x + radius + 4.f, at.y - radius - 14.f),
+                                            ImGui::GetColorU32(ImVec4(0.78f, 0.78f, 0.84f, 0.85f)), SGR_A);
+}
+
+bool drawBlackHoleTooltip(sf::Vector2f at, float radius, sf::Vector2f mouse, double sunDistance, double eyeDistance,
+                          bool rayTraced) {
+    const float reach = std::max(radius, 8.f);
+    const float dx = at.x - mouse.x, dy = at.y - mouse.y;
+    if (dx * dx + dy * dy > reach * reach) return false;
+
+    const double rs = blackhole::schwarzschildRadiusAU(galaxy::SGR_A_MASS);
+    ImGui::BeginTooltip();
+    ImGui::TextColored(ACCENT, "%s", SGR_A);
+    ImGui::TextDisabled("Supermassive black hole");
+    ImGui::Text("Mass: %s", formatMass(galaxy::SGR_A_MASS).c_str());
+    ImGui::Text("Horizon radius: %.0f km", rs * units::KM_PER_AU);
+    ImGui::Text("Shadow radius: %s", formatDistance(blackhole::SHADOW_RADIUS * rs).c_str());
+    ImGui::Text("Distance: %s from the Sun", formatDistance(sunDistance).c_str());
+    if (rayTraced) ImGui::TextDisabled("Ray traced from %.0f Rs away", eyeDistance / rs);
+    ImGui::EndTooltip();
+    return true;
+}
+
 void drawTag(const Camera& camera, const Vector3D& at, const char* text) {
     const std::optional<sf::Vector2f> p = camera.toScreen(at);
     if (!p || !camera.viewport.contains(*p)) return;
     ImGui::GetBackgroundDrawList()->AddText(ImVec2(p->x + 6.f, p->y - 8.f), ImGui::GetColorU32(MUTED), text);
 }
 
-void drawBodyTooltip(const Simulation& sim, const Camera& camera, const SceneFrame& frame, sf::Vector2f mouse) {
-    const std::vector<Body>& bodies = sim.getBodies();
-    int hit = -1;
-    float best = 1e30f;
+int bodyAt(const std::vector<Body>& bodies, const Camera& camera, const SceneFrame& frame, sf::Vector2f at) {
+    struct Hit {
+        std::size_t index;
+        sf::Vector2f p;
+        float r;
+        float d2;
+    };
+    std::vector<Hit> hits;
     for (std::size_t i = 0; i < bodies.size(); ++i) {
-        const Vector3D at = frame.place(bodies[i].position);
-        const std::optional<sf::Vector2f> p = camera.toScreen(at);
+        const Vector3D w = frame.place(bodies[i].position);
+        const std::optional<sf::Vector2f> p = camera.toScreen(w);
         if (!p) continue;
-        const float r =
-            std::max(Renderer::screenRadius(bodies[i].mass, bodies[i].radius, camera.pxPerAUAt(at)), 6.f);
-        const float dx = p->x - mouse.x, dy = p->y - mouse.y, d2 = dx * dx + dy * dy;
-        if (d2 <= r * r && d2 < best) {
-            best = d2;
-            hit = static_cast<int>(i);
+        const float r = std::max(Renderer::screenRadius(bodies[i].mass, bodies[i].radius, camera.pxPerAUAt(w)), 6.f);
+        const float dx = p->x - at.x, dy = p->y - at.y, d2 = dx * dx + dy * dy;
+        if (d2 <= r * r) hits.push_back(Hit{i, *p, r, d2});
+    }
+
+    int best = -1;
+    float bestD2 = 1e30f;
+    for (const Hit& h : hits) {
+        bool hidden = false;
+        for (const Hit& o : hits) {
+            if (bodies[o.index].mass <= bodies[h.index].mass) continue;
+            const float dx = o.p.x - h.p.x, dy = o.p.y - h.p.y;
+            if (dx * dx + dy * dy < o.r * o.r) hidden = true;
+        }
+        if (!hidden && h.d2 < bestD2) {
+            best = static_cast<int>(h.index);
+            bestD2 = h.d2;
         }
     }
+    return best;
+}
+
+void drawBodyTooltip(const Simulation& sim, const Camera& camera, const SceneFrame& frame, sf::Vector2f mouse) {
+    const std::vector<Body>& bodies = sim.getBodies();
+    const int hit = bodyAt(bodies, camera, frame, mouse);
     if (hit < 0) return;
 
     const Body& b = bodies[static_cast<std::size_t>(hit)];
@@ -439,6 +533,9 @@ std::string formatMass(double m) {
 }
 
 std::string formatDistance(double au) {
+    if (au >= AU_PER_KPC) return printf_string("%.2f kpc (%s)", au / AU_PER_KPC, lightYears(au).c_str());
+    if (au >= PARSEC_FROM_AU)
+        return printf_string("%.2f pc (%s)", au / units::AU_PER_PARSEC, lightYears(au).c_str());
     if (au >= 1000.0) return printf_string("%.0f AU", au);
     if (au >= 0.01) return printf_string("%.3f AU", au);
     return printf_string("%.0f km", au * units::KM_PER_AU);

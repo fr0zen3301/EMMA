@@ -1,6 +1,7 @@
 // Run them all:  ctest --test-dir build -C Release --output-on-failure
 // Run one:       build/Release/physics_tests earth_year
 
+#include "emma/BlackHole.hpp"
 #include "emma/Body.hpp"
 #include "emma/Calendar.hpp"
 #include "emma/Clock.hpp"
@@ -10,6 +11,7 @@
 #include "emma/IAS15Integrator.hpp"
 #include "emma/Octree.hpp"
 #include "emma/Simulation.hpp"
+#include "emma/Spin.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -500,16 +502,27 @@ void testInclination() {
     CHECK(std::abs(later - 7.00498) < 0.01, "Mercury's orbit tilted to %.5f deg in 10 years", later);
 }
 
-void testGalacticFrame() {
-    const galaxy::Rotation& r = galaxy::eclipticToGalactic();
+// How far a 3x3 matrix is from a rotation: the worst error in its rows' lengths and right angles
+double rotationError(const double (&m)[3][3]) {
     double worst = 0.0;
     for (int i = 0; i < 3; ++i) {
         for (int j = 0; j < 3; ++j) {
-            const double dot = r.m[i][0] * r.m[j][0] + r.m[i][1] * r.m[j][1] + r.m[i][2] * r.m[j][2];
+            const double dot = m[i][0] * m[j][0] + m[i][1] * m[j][1] + m[i][2] * m[j][2];
             worst = std::max(worst, std::abs(dot - (i == j ? 1.0 : 0.0)));
         }
     }
-    CHECK(worst < 1e-9, "the ecliptic to Galactic matrix isn't a rotation: off by %.2e", worst);
+    return worst;
+}
+
+void testGalacticFrame() {
+    // The table's 10 digits make it a rotation to about 1e-10. A typo in any of its
+    // 9 numbers would show far above that, and straightening would otherwise hide it
+    const double table = rotationError(galaxy::ICRS_TO_GALACTIC);
+    const double straightened = rotationError(galaxy::eclipticToGalactic().m);
+    std::printf("  the Hipparcos table is off a rotation by %.1e, the matrix EMMA uses by %.1e\n", table,
+                straightened);
+    CHECK(table < 1e-9, "the Hipparcos table isn't a rotation: off by %.2e", table);
+    CHECK(straightened < 1e-14, "the ecliptic to Galactic matrix isn't a rotation: off by %.2e", straightened);
 
     const double ra = 192.85948 * units::DEG, dec = 27.12825 * units::DEG;
     const Vector3D poleEquatorial(std::cos(dec) * std::cos(ra), std::cos(dec) * std::sin(ra), std::sin(dec));
@@ -524,13 +537,111 @@ void testGalacticFrame() {
     CHECK(std::abs(l - 96.38) < 0.02 && std::abs(b - 29.81) < 0.02, "north ecliptic pole at l %.3f, b %.3f", l, b);
 
     const Vector3D v(0.3, -1.7, 2.9);
-    CHECK((galaxy::toEcliptic(galaxy::fromEcliptic(v)) - v).magnitude() < 1e-12, "there and back moved the point");
+    const double moved = (galaxy::toEcliptic(galaxy::fromEcliptic(v)) - v).magnitude();
+    CHECK(moved < 1e-12, "there and back moved the point by %.2e", moved);
 
     const Vector3D heading = galaxy::toEcliptic(galaxy::sunVelocityKms().normalized());
     const double tilt = std::asin(heading.z) / units::DEG;
     std::printf("  the Sun heads %.2f deg out of the ecliptic plane at %.1f km/s\n", tilt,
                 galaxy::sunVelocityKms().magnitude());
     CHECK(tilt > 60.0 && tilt < 61.2, "the Sun heads %.2f deg out of the ecliptic, expected about 60.6", tilt);
+}
+
+// ---------------------------------------------------------------------------
+// Sgr A*. The ray step here is the same as the shader's, so these check what it draws
+
+void testBlackHoleRadius() {
+    const double rs = blackhole::schwarzschildRadiusAU(galaxy::SGR_A_MASS);
+    const double sunKm = blackhole::schwarzschildRadiusAU(1.0) * units::KM_PER_AU;
+    std::printf("  Sgr A*: Rs = %.5f AU (%.0f km); the Sun: %.4f km\n", rs, rs * units::KM_PER_AU, sunKm);
+    CHECK(relative(rs, 0.084887) < 1e-4, "Sgr A*'s horizon is %.6f AU, expected 0.084887", rs);
+    CHECK(relative(sunKm, 2.9533) < 1e-4, "the Sun's Schwarzschild radius is %.4f km, expected 2.9533", sunKm);
+}
+
+void testBlackHoleShadow() {
+    // Rays from far away, aimed b Rs off center: inside 2.6 Rs they fall in
+    auto aim = [](double b) {
+        blackhole::Ray ray = blackhole::startRay(Vector3D(-1000.0, b, 0.0), Vector3D(1.0, 0.0, 0.0));
+        return blackhole::traceRay(ray, 1100.0);
+    };
+    CHECK(aim(2.5) == blackhole::RayEnd::Horizon, "a ray aimed 2.5 Rs off center didn't fall in");
+    CHECK(aim(2.7) == blackhole::RayEnd::Escaped, "a ray aimed 2.7 Rs off center didn't escape");
+}
+
+void testBlackHolePhotonSphere() {
+    // Light sent sideways at 1.5 Rs goes around in a circle. The circle is unstable, so
+    // it's only followed for a quarter turn
+    blackhole::Ray ray = blackhole::startRay(Vector3D(blackhole::PHOTON_SPHERE, 0.0, 0.0), Vector3D(0.0, 1.0, 0.0));
+    double worst = 0.0;
+    for (int i = 0; i < 1000; ++i) {
+        blackhole::stepRay(ray, blackhole::stepLength(ray.position.magnitude()));
+        worst = std::max(worst, relative(ray.position.magnitude(), blackhole::PHOTON_SPHERE));
+        if (std::atan2(ray.position.y, ray.position.x) >= 0.5 * units::PI) break;
+    }
+    std::printf("  over a quarter turn the radius strays by %.2e\n", worst);
+    CHECK(worst < 0.02, "light on the photon sphere strayed %.2e from it in a quarter turn", worst);
+}
+
+void testBlackHoleBending() {
+    // Far from the hole, light passing b Rs away bends by 2 / b radians
+    const double b = 1000.0;
+    blackhole::Ray ray = blackhole::startRay(Vector3D(-1e5, b, 0.0), Vector3D(1.0, 0.0, 0.0));
+    const blackhole::RayEnd end = blackhole::traceRay(ray, 1.1e5);
+    const double bend = std::atan2(-ray.velocity.y, ray.velocity.x);
+    std::printf("  bent by %.4e rad at b = %.0f Rs, expected %.4e\n", bend, b, 2.0 / b);
+    CHECK(end == blackhole::RayEnd::Escaped, "a ray passing 1000 Rs away didn't escape");
+    CHECK(relative(bend, 2.0 / b) < 0.02, "a ray passing 1000 Rs away bent by %.4e, expected %.4e", bend, 2.0 / b);
+}
+
+void testBlackHoleDoppler() {
+    // At the thin disk's inner edge the gas moves at half the speed of light
+    const double v = blackhole::orbitSpeed(blackhole::ISCO);
+    const double toward = blackhole::frequencyShift(blackhole::ISCO, v, 1.0, 1e12);
+    const double away = blackhole::frequencyShift(blackhole::ISCO, v, -1.0, 1e12);
+    std::printf("  at 3 Rs: speed %.3f c, shift %.4f toward the eye and %.4f away\n", v, toward, away);
+    CHECK(relative(v, 0.5) < 1e-12, "the orbit speed at 3 Rs is %.6f c, expected 0.5", v);
+    CHECK(relative(toward, std::sqrt(2.0)) < 1e-9, "gas moving toward the eye shifts by %.6f, expected 1.414214",
+          toward);
+    CHECK(relative(away, std::sqrt(2.0) / 3.0) < 1e-9, "gas moving away shifts by %.6f, expected 0.471405", away);
+}
+
+// ---------------------------------------------------------------------------
+// Which way the bodies point, for drawing their surfaces
+
+void testBodySpin() {
+    const spin::Model* earth = spin::find("Earth");
+    const spin::Model* moon = spin::find("Moon");
+    const spin::Model* saturn = spin::find("Saturn");
+    CHECK(earth && moon && saturn, "a spin model is missing");
+    if (!earth || !moon || !saturn) return;
+    CHECK(spin::find("Alpha Centauri A") == nullptr, "a body without a model found one");
+
+    // At J2000 Earth's prime meridian, Greenwich, points to right ascension 190.147 + 90 degrees
+    const spin::Axes q = spin::equatorialAxes(*earth, units::J2000_JD);
+    double greenwich = std::atan2(q.x.y, q.x.x) / units::DEG;
+    if (greenwich < 0.0) greenwich += 360.0;
+    std::printf("  Greenwich at right ascension %.4f deg at J2000\n", greenwich);
+    CHECK(std::abs(greenwich - 280.147) < 1e-6, "Greenwich points to right ascension %.6f, expected 280.147",
+          greenwich);
+
+    // Tilts from the ecliptic's pole: Earth's axis 23.44 degrees, Saturn's 28.05, and the
+    // Moon's about 1.5 (its equator stays close to the ecliptic)
+    auto tilt = [](const spin::Model& m) {
+        return std::acos(spin::eclipticAxes(m, units::J2000_JD).z.z) / units::DEG;
+    };
+    std::printf("  tilts: Earth %.3f, Saturn %.3f, Moon %.3f deg\n", tilt(*earth), tilt(*saturn), tilt(*moon));
+    CHECK(std::abs(tilt(*earth) - 23.4393) < 1e-3, "Earth's axis tilts %.4f deg, expected 23.4393", tilt(*earth));
+    CHECK(std::abs(tilt(*saturn) - 28.05) < 0.1, "Saturn's axis tilts %.3f deg, expected about 28.05", tilt(*saturn));
+    CHECK(tilt(*moon) > 1.4 && tilt(*moon) < 1.7, "the Moon's axis tilts %.3f deg, expected about 1.5", tilt(*moon));
+
+    // The axes stay a rotation years later, after millions of degrees of spin
+    for (const char* name : {"Earth", "Moon", "Mars", "Jupiter", "Neptune"}) {
+        const spin::Axes a = spin::eclipticAxes(*spin::find(name), units::J2000_JD + 9000.5);
+        double worst = 0.0;
+        for (const Vector3D& v : {a.x, a.y, a.z}) worst = std::max(worst, std::abs(v.magnitude() - 1.0));
+        worst = std::max({worst, std::abs(a.x.dot(a.y)), std::abs(a.y.dot(a.z)), std::abs(a.z.dot(a.x))});
+        CHECK(worst < 1e-12, "%s's axes are off a rotation by %.2e", name, worst);
+    }
 }
 
 struct Test {
@@ -559,6 +670,12 @@ const Test TESTS[] = {
     {"crowded_close_pass", testCrowdedClosePass},
     {"inclination", testInclination},
     {"galactic_frame", testGalacticFrame},
+    {"black_hole_radius", testBlackHoleRadius},
+    {"black_hole_shadow", testBlackHoleShadow},
+    {"black_hole_photon_sphere", testBlackHolePhotonSphere},
+    {"black_hole_bending", testBlackHoleBending},
+    {"black_hole_doppler", testBlackHoleDoppler},
+    {"body_spin", testBodySpin},
 };
 
 }

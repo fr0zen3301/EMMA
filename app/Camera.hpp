@@ -16,7 +16,7 @@
 class Camera {
 public:
     static constexpr double MIN_DISTANCE = 1e-7;  // AU
-    static constexpr double MAX_DISTANCE = 1e5;   // AU
+    static constexpr double MAX_DISTANCE = 1e10;  // AU, about 48 kpc: the whole Milky Way fits in the view
     static constexpr double TAN_HALF_FOV = 0.41421356237309515;  // tan(22.5 deg): a 45 degree field of view
     static constexpr double NEAR = 1e-4;          // near plane, as a fraction of the distance
     static constexpr double MAX_PICK = 1e3;       // farthest pick along a view ray, as a multiple of the distance
@@ -30,6 +30,12 @@ public:
 
     double yaw() const { return yawAngle; }
     double pitch() const { return pitchAngle; }
+
+    // The camera's axes in world coordinates, and the eye relative to the target (AU)
+    const emma::Vector3D& rightAxis() const { return right; }
+    const emma::Vector3D& upAxis() const { return up; }
+    const emma::Vector3D& forwardAxis() const { return forward; }
+    emma::Vector3D eyeOffset() const { return forward * -distance; }
 
     sf::Vector2f middle() const { return viewport.position + viewport.size * 0.5f; }
     double focal() const { return 0.5 * viewport.size.y / TAN_HALF_FOV; }  // pixels
