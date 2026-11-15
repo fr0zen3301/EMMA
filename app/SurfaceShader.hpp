@@ -42,7 +42,6 @@ const float PI = 3.14159265;
 // lookup takes its mipmap level from how fast the coordinates change between pixels, so
 // across that jump it would pick the blurriest level and draw a seam. A second
 // longitude, with its jump at 0 degrees, is used wherever it changes more slowly
-// (Tarini's trick)
 vec2 mapCoords(vec3 p) {
     float lon = atan(p.y, p.x) / (2.0 * PI);
     float lat = asin(clamp(p.z / length(p), -1.0, 1.0)) / PI;

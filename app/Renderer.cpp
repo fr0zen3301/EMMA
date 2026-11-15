@@ -83,7 +83,7 @@ Renderer::Renderer() {
     // Background stars are effectively infinitely far away, so they turn with the
     // view but stay put while the camera pans and zooms. They are made in Galactic
     // coordinates: most spread evenly over the sky, the rest crowded into the band of
-    // the Milky Way along the Galactic plane. Fixed seed: the same sky every run.
+    // the Milky Way along the Galactic plane, fixed seed
     std::mt19937 rng(1337u);
     std::normal_distribution<double> axis(0.0, 1.0);  // three normals make a direction uniform over the sky
     std::normal_distribution<double> latitude(0.0, 5.0 * units::DEG);  // how far band stars stray from the plane

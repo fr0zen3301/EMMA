@@ -3,8 +3,7 @@
 // The fragment shader that ray traces Sgr A*. Every pixel follows its light ray backward
 // from the eye through the curved space around a black hole that doesn't spin, with the
 // same velocity Verlet step as emma::blackhole::stepRay. Lengths are in Schwarzschild
-// radii and directions in Galactic coordinates, the frame the sky map is drawn in.
-// docs/black-hole.md explains each part.
+// radii and directions in Galactic coordinates
 //
 // uLook picks what glows around the hole: 0 the thick, see-through gas flow Sgr A*
 // really has, 1 a thin, opaque disk, 2 nothing.
