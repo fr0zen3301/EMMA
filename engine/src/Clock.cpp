@@ -15,36 +15,36 @@ Clock::Report Clock::run(Simulation& sim, double realSeconds) {
 }
 
 Clock::Report Clock::run(Simulation& sim, double realSeconds, double nowJulianDay) {
-    if (stepRequested || !sim.hasCalendar()) live = false;  // stepping, or no dates to follow
+    if (stepRequested || !sim.hasCalendar()) live = false;  // real time needs dates and no stepping
+    Report report;
     if (live) {
-        // run until the simulation's clock reads nowJulianDay
-        // after a pause or a load it catches up at the full step
+        // Catch up to the current time. If the simulation is ahead of it, wait
         if (!paused) {
             owed = nowJulianDay - (sim.epoch() + sim.time());
             sim.limitStep(std::max(owed, 0.0));
         }
+        if (owed < 0.0) report.ahead = -owed;
     } else {
+        // Coming out of real time, forget the gap to the clock, so the new speed starts at once
+        if (wasLive) owed = 0.0;
         sim.limitStep(timeScale / GLIDE_RATE);
-        // The frame time is capped so a stall (dragging the window on Windows pauses
-        // the loop) can't snowball
+        // Cap the frame time, so a long pause (like dragging the window) can't pile up
         if (!paused)
             owed += std::min(realSeconds, MAX_FRAME) * timeScale;
         else if (stepRequested)
             owed += std::max(timeScale / GLIDE_RATE, sim.timeStep());
     }
     stepRequested = false;
+    wasLive = live;
 
-    Report report;
     const auto start = std::chrono::steady_clock::now();
     while (owed >= sim.timeStep()) {
         sim.step();
         owed -= sim.timeStep();
         ++report.steps;
-        // Checked after every step: a single step can take long (a close pass split into
-        // thousands of pieces, IAS15, many bodies), and reading the clock costs far less
+        // Stop if this frame has used up its time budget
         if (std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count() > BUDGET) {
-            // Drop the backlog instead of freezing the window. Real time works out
-            // what's owed from the clock again next frame, so nothing is lost there
+            // Drop the rest instead of freezing the window
             report.behind = !live;
             owed = 0.0;
             break;

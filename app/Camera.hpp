@@ -7,31 +7,28 @@
 #include <cmath>
 #include <optional>
 
-// An orbit camera. It looks at a target point from some distance away, turned by
-// yaw (around the ecliptic pole) and pitch (how high above the ecliptic plane it
-// sits: 90 degrees looks straight down). World points are AU in the ecliptic frame,
-// window pixels have y pointing down. Everything is worked out in double precision
-// relative to the target, so you can zoom from Neptune's orbit down to the Moon
-// without the picture shaking
+// A camera that circles a target point. yaw turns it around, pitch tilts it up and down
+// (90 degrees looks straight down). Math is done relative to the target, so zooming way
+// in doesn't make the picture shake
 class Camera {
 public:
     static constexpr double MIN_DISTANCE = 1e-7;  // AU
-    static constexpr double MAX_DISTANCE = 1e10;  // AU, about 48 kpc: the whole Milky Way fits in the view
-    static constexpr double TAN_HALF_FOV = 0.41421356237309515;  // tan(22.5 deg): a 45 degree field of view
-    static constexpr double NEAR = 1e-4;          // near plane, as a fraction of the distance
-    static constexpr double MAX_PICK = 1e3;       // farthest pick along a view ray, as a multiple of the distance
+    static constexpr double MAX_DISTANCE = 1e10;  // AU: far enough to see the whole Milky Way
+    static constexpr double TAN_HALF_FOV = 0.41421356237309515;  // a 45 degree field of view
+    static constexpr double NEAR = 1e-4;          // nothing closer than this is drawn (fraction of distance)
+    static constexpr double MAX_PICK = 1e3;       // farthest a click can land (multiple of distance)
     static constexpr double MAX_PITCH = 0.5 * emma::units::PI;
 
     emma::Vector3D target;   // AU, the point the camera circles and looks at
     double distance = 10.0;  // AU, from the eye to the target
-    sf::FloatRect viewport;  // pixels: the area right of the sidebar, above the status bar
+    sf::FloatRect viewport;  // pixels: the area between the sidebar and the status bar
 
     Camera() { aim(); }
 
     double yaw() const { return yawAngle; }
     double pitch() const { return pitchAngle; }
 
-    // The camera's axes in world coordinates, and the eye relative to the target (AU)
+    // Which way the camera faces, and where the eye is relative to the target
     const emma::Vector3D& rightAxis() const { return right; }
     const emma::Vector3D& upAxis() const { return up; }
     const emma::Vector3D& forwardAxis() const { return forward; }
@@ -39,9 +36,9 @@ public:
 
     sf::Vector2f middle() const { return viewport.position + viewport.size * 0.5f; }
     double focal() const { return 0.5 * viewport.size.y / TAN_HALF_FOV; }  // pixels
-    double pxPerAU() const { return focal() / distance; }                  // at the target's depth
+    double pxPerAU() const { return focal() / distance; }                  // at the target
 
-    // A world point in camera coordinates: x to the right, y up, z the depth in front of the eye
+    // A point as seen by the camera: x right, y up, z how far in front
     emma::Vector3D toCamera(const emma::Vector3D& w) const {
         const emma::Vector3D d = (w - target) + forward * distance;
         return emma::Vector3D(d.dot(right), d.dot(up), d.dot(forward));
@@ -49,7 +46,7 @@ public:
 
     bool inFront(const emma::Vector3D& c) const { return c.z > NEAR * distance; }
 
-    // Camera coordinates to pixels: the perspective divide. c must be in front of the near plane
+    // Camera coordinates to pixels. c must be in front of the camera
     sf::Vector2f project(const emma::Vector3D& c) const {
         const sf::Vector2f m = middle();
         const double s = focal() / c.z;
@@ -62,22 +59,20 @@ public:
         return project(c);
     }
 
-    // A direction rather than a point, such as a background star's: it turns with
-    // the view but doesn't move when the camera does
+    // A direction, like a background star's: it turns with the view but never moves
     std::optional<sf::Vector2f> toScreenDirection(const emma::Vector3D& d) const {
         const emma::Vector3D c(d.dot(right), d.dot(up), d.dot(forward));
         if (c.z <= 0.5) return std::nullopt;
         return project(c);
     }
 
-    // How many pixels one AU covers at w's depth. 0 behind the eye
+    // How many pixels one AU covers at w's distance. 0 if w is behind the camera
     double pxPerAUAt(const emma::Vector3D& w) const {
         const double depth = toCamera(w).z;
         return depth > NEAR * distance ? focal() / depth : 0.0;
     }
 
-    // Cuts off the part of a segment (in camera coordinates) behind the near plane.
-    // False when nothing is left
+    // Cuts off the part of a line that's behind the camera. False if nothing is left
     bool clip(emma::Vector3D& a, emma::Vector3D& b) const {
         const double near = NEAR * distance;
         if (a.z <= near && b.z <= near) return false;
@@ -86,7 +81,7 @@ public:
         return true;
     }
 
-    // The point on the plane z = planeZ under a pixel, if the view ray reaches it
+    // The point on a flat plane (height planeZ) under a pixel, if there is one
     std::optional<emma::Vector3D> pick(sf::Vector2f s, double planeZ) const {
         const sf::Vector2f m = middle();
         const double f = focal();
@@ -98,13 +93,12 @@ public:
         return target + (eye + ray * t);
     }
 
-    // On the grid: the plane through the target, parallel to the ecliptic
+    // The point on the grid under a pixel
     std::optional<emma::Vector3D> pick(sf::Vector2f s) const { return pick(s, target.z); }
 
     void zoom(double factor) { distance = std::clamp(distance / factor, MIN_DISTANCE, MAX_DISTANCE); }
 
-    // Zoom keeping the grid point under screenPoint fixed, or toward the target when
-    // there is none nearby
+    // Zooms toward the point under the cursor
     void zoomAt(sf::Vector2f screenPoint, double factor) {
         const std::optional<emma::Vector3D> before = pick(screenPoint);
         zoom(factor);
@@ -112,8 +106,7 @@ public:
         if (before && after && (*before - target).magnitude() < 20.0 * distance) target += *before - *after;
     }
 
-    // Slides the grid under the cursor from one pixel to another. Near the horizon,
-    // where that would fling the view far away, it slides by the drag instead
+    // Drags the view so the grid follows the cursor
     void pan(sf::Vector2f from, sf::Vector2f to) {
         const std::optional<emma::Vector3D> a = pick(from), b = pick(to);
         if (a && b && (*a - *b).magnitude() < 2.0 * distance) {
@@ -139,7 +132,7 @@ public:
 
     void topView() { setAngles(0.0, MAX_PITCH); }
 
-    // Center on the origin (the barycenter) with radiusAU visible on the short side
+    // Centers the view and zooms so radiusAU fits
     void fit(double radiusAU) {
         const double half = 0.5 * std::min(viewport.size.x, viewport.size.y);
         distance = std::clamp(focal() * radiusAU / half, MIN_DISTANCE, MAX_DISTANCE);
@@ -147,7 +140,7 @@ public:
     }
 
 private:
-    // The camera's axes in world coordinates, from yaw and pitch
+    // Works out which way the camera faces from yaw and pitch
     void aim() {
         const double cy = std::cos(yawAngle), sy = std::sin(yawAngle);
         const double cp = std::cos(pitchAngle), sp = std::sin(pitchAngle);

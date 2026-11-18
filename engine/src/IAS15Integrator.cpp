@@ -8,8 +8,7 @@ namespace emma {
 
 namespace {
 
-// Gauss-Radau spacing: the moments within a step where IAS15 samples the forces,
-// as fractions of the step. 0 is the start; the end (1) is never sampled
+// The moments inside a piece where IAS15 checks the forces, as fractions of the piece
 constexpr std::array<double, 8> NODES = {
     0.0,
     0.0562625605369221464656521910318,
@@ -21,16 +20,14 @@ constexpr std::array<double, 8> NODES = {
     0.977520613561287501891174488626,
 };
 
-// The Newton basis N_k(t) = t (t - h1) (t - h2) ... (t - hk), k = 0..6, written out
-// in powers of t: N_k(t) = sum over j of NEWTON_TO_POWER[k][j] t^(j+1). This turns
-// the Newton-form coefficients g into the power-form b
+// A table for converting the curve between its two forms (g and b)
 std::array<std::array<double, 7>, 7> makeNewtonToPower() {
     std::array<std::array<double, 7>, 7> rows{};
     std::array<double, 7> poly{};
     poly[0] = 1.0;  // N_0(t) = t
     for (std::size_t k = 0; k < 7; ++k) {
         if (k > 0) {
-            // Multiply by (t - h_k): every power moves up by one, minus h_k times itself
+            // Multiply by (t - h_k)
             for (std::size_t j = k; j > 0; --j) poly[j] = poly[j - 1] - NODES[k] * poly[j];
             poly[0] = -NODES[k] * poly[0];
         }
@@ -48,14 +45,12 @@ double choose(std::size_t n, std::size_t k) {
     return r;
 }
 
-// Where a body is at fraction s of a step of h days: its acceleration polynomial
-// integrated twice. With t = s h:
-// x = x0 + v0 t + t^2 (a0/2 + b0 s/6 + b1 s^2/12 + b2 s^3/20 + ... + b6 s^7/72)
+// Where a body is at fraction s of a piece of h days, following the acceleration curve
 Vector3D positionAt(const Vector3D& x0, const Vector3D& v0, const Vector3D& a0,
                     const std::array<Vector3D, 7>& b, double s, double h) {
     Vector3D p;
     for (std::size_t r = 0; r < 7; ++r) {
-        const std::size_t k = 6 - r;  // innermost term first (Horner's rule)
+        const std::size_t k = 6 - r;  // highest term first
         const double kk = static_cast<double>(k);
         p = b[k] / ((kk + 2.0) * (kk + 3.0)) + p * s;
     }
@@ -64,8 +59,7 @@ Vector3D positionAt(const Vector3D& x0, const Vector3D& v0, const Vector3D& a0,
     return x0 + v0 * t + p * (t * t);
 }
 
-// Velocity at the end of a step of h days: the polynomial integrated once.
-// v = v0 + h (a0 + b0/2 + b1/3 + ... + b6/8)
+// A body's velocity at the end of a piece of h days
 Vector3D velocityAtEnd(const Vector3D& v0, const Vector3D& a0, const std::array<Vector3D, 7>& b, double h) {
     Vector3D sum = a0;
     for (std::size_t k = 0; k < 7; ++k) sum += b[k] / (static_cast<double>(k) + 2.0);
@@ -75,7 +69,7 @@ Vector3D velocityAtEnd(const Vector3D& v0, const Vector3D& a0, const std::array<
 } // namespace
 
 int IAS15Integrator::step(World& world, Gravity& gravity, double dt, const std::function<void()>& afterPiece) {
-    // Pieces as long as IAS15 asks for, cut so the last one lands exactly on dt
+    // Take pieces as long as IAS15 wants, with the last one ending exactly at dt
     const double minPiece = dt / MAX_SUBSTEPS;
     double remaining = dt;
     int pieces = 0;
@@ -83,11 +77,10 @@ int IAS15Integrator::step(World& world, Gravity& gravity, double dt, const std::
         const double wanted = nextStep > 0.0 ? nextStep : dt;
         double h = std::max(wanted, minPiece);
         if (h >= remaining) h = remaining;
-        else if (remaining < 1.5 * h) h = 0.5 * remaining;  // no sliver left over at the end
+        else if (remaining < 1.5 * h) h = 0.5 * remaining;  // avoid a tiny last piece
 
         const double taken = piece(world, gravity, h, minPiece);
-        // The next piece: IAS15's suggestion, at most 1/SAFETY times as long as the
-        // last piece it chose itself. A piece cut short to land on dt wasn't chosen
+        // Next piece: IAS15's suggestion, but grow at most 4x at a time
         const double chosen = taken < h ? taken : std::max(taken, wanted);
         nextStep = std::min(suggested, chosen / SAFETY);
 
@@ -102,9 +95,7 @@ double IAS15Integrator::piece(World& world, Gravity& gravity, double h, double m
     std::vector<Body>& bodies = world.bodies;
     const std::size_t n = bodies.size();
 
-    // First guess for this step's polynomial: the last step's, shifted to start
-    // where it ended. Without one (at the start, after bodies were added or merged,
-    // or after a big jump in step size) the guess is constant acceleration
+    // Start from the last piece's curve if there is one, otherwise from constant acceleration
     if (hasHistory && b.size() == n && lastStep > 0.0 && h <= 4.0 * lastStep) predictNextStep(h / lastStep);
     else b.assign(n, Coefficients{});
     g.resize(n);
@@ -112,27 +103,26 @@ double IAS15Integrator::piece(World& world, Gravity& gravity, double h, double m
     v0.resize(n);
     a0.resize(n);
 
-    gravity.accelerate(bodies);  // the forces at the start of the step
+    gravity.accelerate(bodies);  // the forces at the start of the piece
     for (std::size_t i = 0; i < n; ++i) {
         Body& body = bodies[i];
-        body.previousPosition = body.position;  // collisions sweep from here
+        body.previousPosition = body.position;  // collision checks start here
         x0[i] = body.position;
         v0[i] = body.velocity;
         a0[i] = body.acceleration;
     }
 
-    // Converge, and redo it shorter while IAS15 finds the piece far too long for
-    // how fast the forces change
+    // Fit the curve. If the piece turns out far too long, shorten it and fit again
     for (;;) {
         converge(bodies, gravity, h);
         suggested = suggestStep(h);
         if (suggested >= SAFETY * h || h <= minPiece) break;
         const double shorter = std::max(suggested, minPiece);
-        rescale(shorter / h);  // the same curve over the shorter piece: a good first guess
+        rescale(shorter / h);  // reuse the curve as a first guess
         h = shorter;
     }
 
-    // Move every body along the converged polynomial to the end of the step
+    // Move every body along the fitted curve to the end of the piece
     for (std::size_t i = 0; i < n; ++i) {
         bodies[i].position = positionAt(x0[i], v0[i], a0[i], b[i], 1.0, h);
         bodies[i].velocity = velocityAtEnd(v0[i], a0[i], b[i], h);
@@ -146,7 +136,7 @@ double IAS15Integrator::piece(World& world, Gravity& gravity, double h, double m
 void IAS15Integrator::converge(std::vector<Body>& bodies, Gravity& gravity, double h) {
     const std::size_t n = bodies.size();
 
-    // The current guess in Newton form: solve b = NEWTON_TO_POWER g from the top down
+    // Convert the current guess into the form used while fitting
     for (std::size_t i = 0; i < n; ++i) {
         for (std::size_t r = 0; r < 7; ++r) {
             const std::size_t j = 6 - r;
@@ -156,7 +146,7 @@ void IAS15Integrator::converge(std::vector<Body>& bodies, Gravity& gravity, doub
         }
     }
 
-    // Predictor-corrector: sample the forces along the current guess, refit, repeat
+    // Check the forces along the curve, refit it, and repeat until it settles
     double lastError = std::numeric_limits<double>::infinity();
     for (int pass = 0; pass < MAX_ITERATIONS; ++pass) {
         double change = 0.0, scale = 0.0;
@@ -167,12 +157,12 @@ void IAS15Integrator::converge(std::vector<Body>& bodies, Gravity& gravity, doub
 
             for (std::size_t i = 0; i < n; ++i) {
                 const Vector3D& a = bodies[i].acceleration;
-                // Divided differences: the Newton coefficient this sample pins down
+                // Update the curve with this sample
                 Vector3D value = (a - a0[i]) / s;
                 for (std::size_t m = 1; m < node; ++m) value = (value - g[i][m - 1]) / (s - NODES[m]);
                 const Vector3D delta = value - g[i][node - 1];
                 g[i][node - 1] = value;
-                // ... and the power-form coefficients it feeds into
+                // ...in both forms
                 for (std::size_t j = 0; j < node; ++j) b[i][j] += delta * NEWTON_TO_POWER[node - 1][j];
 
                 if (node == 7) {
@@ -181,8 +171,7 @@ void IAS15Integrator::converge(std::vector<Body>& bodies, Gravity& gravity, doub
                 }
             }
         }
-        // Done once the highest coefficient has settled, or when rounding noise
-        // keeps it from settling any further
+        // Stop once the curve has settled, or rounding noise stops it improving
         const double error = scale > 0.0 ? change / scale : 0.0;
         if (error < CONVERGED) break;
         if (pass >= 2 && error >= lastError) break;
@@ -191,9 +180,8 @@ void IAS15Integrator::converge(std::vector<Body>& bodies, Gravity& gravity, doub
 }
 
 double IAS15Integrator::suggestStep(double h) const {
-    // b[6], the t^7 term, is the part of the motion the polynomial only just
-    // catches. Relative to the acceleration it grows like h^7, so scale h until
-    // that ratio would be EPSILON
+    // The curve's highest term shows how fast the forces change. Pick the piece length that
+    // keeps it at EPSILON
     double highest = 0.0, scale = 0.0;
     for (std::size_t i = 0; i < b.size(); ++i) {
         highest = std::max(highest, b[i][6].magnitude());
@@ -204,8 +192,7 @@ double IAS15Integrator::suggestStep(double h) const {
 }
 
 void IAS15Integrator::rescale(double ratio) {
-    // The same curve a(t) over a piece ratio times as long, from the same start:
-    // the t^(j+1) term picks up ratio^(j+1)
+    // Stretch the curve to fit a piece ratio times as long
     for (Coefficients& c : b) {
         double power = ratio;
         for (std::size_t j = 0; j < 7; ++j) {
@@ -216,9 +203,7 @@ void IAS15Integrator::rescale(double ratio) {
 }
 
 void IAS15Integrator::predictNextStep(double ratio) {
-    // The last step's polynomial a(t), re-centered on its end and stretched to the
-    // new step: a(1 + ratio s), written out in powers of s. Its constant term is
-    // the new a0, which gets computed fresh, so only the b's are kept
+    // Move the last piece's curve to start where it ended, as a guess for the next piece
     for (Coefficients& c : b) {
         Coefficients shifted{};
         double power = ratio;  // ratio^(j+1)

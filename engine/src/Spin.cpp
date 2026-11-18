@@ -7,10 +7,7 @@ namespace emma::spin {
 
 namespace {
 
-// From NAIF's pck00011.tpc. Flattening from the radii there: Earth 6378.1366 and
-// 6356.7519 km, Mars 3396.19 and 3376.20, Jupiter 71492 and 66854, Saturn 60268 and
-// 54364, Uranus 25559 and 24973, Neptune 24764 and 24341. Mercury, Venus, the Moon and
-// the Sun are round to within 0.1%
+// Values from NASA NAIF's pck00011.tpc. Flattening is how squashed each body is at its poles
 const Model MODELS[] = {
     // name       pole RA     per century   pole Dec    per century   W           per day           flattening
     {"Sun",       286.13,     0.0,          63.87,      0.0,          84.176,     14.1844,          0.0},
@@ -47,16 +44,15 @@ Axes equatorialAxes(const Model& m, double julianDay) {
                       units::DEG;
     const double dec =
         (m.poleDec + m.poleDecRate * T + m.decAmplitude * std::cos(angle(m.decAngle, m.decAngleRate))) * units::DEG;
-    // W grows by over a million degrees a decade for the fast spinners, so it's brought
-    // back into one turn before it becomes radians
+    // Keep the turn angle within one full turn, so it stays precise
     const double wDegrees = std::fmod(m.meridian + m.meridianRate * d, 360.0) +
                             m.meridianAmplitude * std::sin(angle(m.meridianAngle, m.meridianAngleRate));
     const double w = wDegrees * units::DEG;
 
     const Vector3D pole(std::cos(dec) * std::cos(ra), std::cos(dec) * std::sin(ra), std::sin(dec));
-    // Where the body's equator crosses the ICRF equator going north: right ascension ra + 90 degrees
+    // Where the body's equator crosses Earth's equator
     const Vector3D node(-std::sin(ra), std::cos(ra), 0.0);
-    // Turning the node by W about the pole, toward the east, gives the prime meridian
+    // Turn from there by w to find longitude 0
     Axes axes;
     axes.x = node * std::cos(w) + pole.cross(node) * std::sin(w);
     axes.z = pole;

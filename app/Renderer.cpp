@@ -1,5 +1,6 @@
 #include "Renderer.hpp"
 #include "BlackHoleShader.hpp"
+#include "SpacetimeSheet.hpp"
 #include "SurfaceShader.hpp"
 #include "emma/BlackHole.hpp"
 #include "emma/Galaxy.hpp"
@@ -8,6 +9,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <numeric>
 #include <optional>
 #include <random>
@@ -16,26 +18,27 @@ using namespace emma;
 
 namespace {
 
-constexpr int STAR_COUNT = 12000;  // over the whole sky, about 700 in view at once
-constexpr int BAND_COUNT = 9000;   // crowded into the Milky Way along the Galactic plane
+constexpr int STAR_COUNT = 12000;  // stars spread over the whole sky
+constexpr int BAND_COUNT = 9000;   // extra stars along the Milky Way's band
 constexpr int GRID_LINES = 20;     // grid lines on each side of the middle
 const sf::Color GRID_COLOR(120, 126, 165);
+constexpr int SHEET_PIECES = 4;    // pieces per cell when the grid bends, so it curves smoothly
+constexpr double SHEET_SMOOTHING = 0.75;  // smallest well width, in grid cells
+constexpr double SHEET_EASE = 0.15;       // how quickly the depth adjusts, per frame
 
-// Sgr A*
-constexpr float HOLE_MARKER = 6.4f;        // px, the shadow's radius in the far-away marker. With its ring
-                                           // it's 9 px, the cap screenRadius gives a body this heavy
-constexpr double TRACE_FROM_PX = 1.0;      // ray trace once the true shadow's radius is at least this many px
-constexpr float SETTLE_SECONDS = 0.25f;    // full resolution once the view has stayed still this long
-constexpr double SKY_FOCAL = 1050.0;       // px, the default window's focal length: sizes the stars in the sky map
+// Black holes
+constexpr float HOLE_MARKER = 6.4f;        // px, the shadow's size when the hole is far away
+constexpr double TRACE_FROM_PX = 1.0;      // start ray tracing once the shadow is this many px
+constexpr float SETTLE_SECONDS = 0.25f;    // switch to full resolution after the view is still this long
+constexpr double SKY_FOCAL = 1050.0;       // px, used to size the stars in the sky image
 
 // Real surfaces
-constexpr double SURFACE_FROM_PX = 3.0;    // a body's true radius on screen before its texture is drawn
-constexpr float SATURN_RING_IN = 1.2388f;  // Saturn's radii: the C ring's inner edge, 74,658 km
-constexpr float SATURN_RING_OUT = 2.2695f; // and the A ring's outer edge, 136,775 km
-constexpr float MOON_RELIEF = 0.0115f;     // the height map's range in Moon radii, assuming it spans the
-                                           // Moon's full 20 km from lowest to highest
+constexpr double SURFACE_FROM_PX = 3.0;    // show the real surface once a body is this many px
+constexpr float SATURN_RING_IN = 1.2388f;  // ring edges, in Saturn radii
+constexpr float SATURN_RING_OUT = 2.2695f;
+constexpr float MOON_RELIEF = 0.0115f;     // the Moon's 20 km of height range, in Moon radii
 
-// The glow of hot gas around Sgr A*, from dim red (g = 0) through orange (1) to near white
+// The color of hot gas around a black hole, from dim red to near white
 sf::Color holeColor(double g, std::uint8_t alpha = 255) {
     g = std::max(0.0, g);
     double r, gr, b;
@@ -69,7 +72,7 @@ void drawDisc(sf::RenderTarget& target, sf::Vector2f at, float radius, sf::Color
     target.draw(disc);
 }
 
-// The smallest 1, 2 or 5 times a power of ten that is at least raw
+// Rounds up to a tidy number: 1, 2 or 5 times a power of ten
 double niceStep(double raw) {
     const double decade = std::pow(10.0, std::floor(std::log10(raw)));
     for (const double m : {1.0, 2.0, 5.0})
@@ -80,13 +83,11 @@ double niceStep(double raw) {
 }
 
 Renderer::Renderer() {
-    // Background stars are effectively infinitely far away, so they turn with the
-    // view but stay put while the camera pans and zooms. They are made in Galactic
-    // coordinates: most spread evenly over the sky, the rest crowded into the band of
-    // the Milky Way along the Galactic plane, fixed seed
+    // Make the background stars: most spread evenly, the rest along the Milky Way.
+    // The fixed seed gives the same sky every time
     std::mt19937 rng(1337u);
-    std::normal_distribution<double> axis(0.0, 1.0);  // three normals make a direction uniform over the sky
-    std::normal_distribution<double> latitude(0.0, 5.0 * units::DEG);  // how far band stars stray from the plane
+    std::normal_distribution<double> axis(0.0, 1.0);  // for random directions
+    std::normal_distribution<double> latitude(0.0, 5.0 * units::DEG);  // how far Milky Way stars stray from its band
     std::uniform_real_distribution<double> longitude(0.0, 2.0 * units::PI);
     std::uniform_real_distribution<float> size(0.5f, 1.4f), bandSize(0.4f, 0.9f);
     std::uniform_int_distribution<int> bright(60, 210), dim(35, 110), tint(0, 2);
@@ -132,9 +133,9 @@ void Renderer::addSegment(const Camera& camera, Vector3D a, Vector3D b, sf::Colo
     lines.append(sf::Vertex{camera.project(b), cb});
 }
 
-void Renderer::drawGrid(sf::RenderTarget& target, const Camera& camera) {
-    // Square grid on the plane through the target, parallel to the ecliptic. The
-    // spacing follows the zoom, and the lines fade out away from the middle
+double Renderer::drawGrid(sf::RenderTarget& target, const Camera& camera, const std::vector<sheet::Mass>& masses,
+                          double sheetDepth) {
+    // A square grid around the target. Its spacing follows the zoom, and it fades at the edges
     const double step = niceStep(camera.distance / 5.0);
     const Vector3D& t = camera.target;
     const double cx = std::round(t.x / step) * step, cy = std::round(t.y / step) * step;
@@ -144,20 +145,64 @@ void Renderer::drawGrid(sf::RenderTarget& target, const Camera& camera) {
         return sf::Color(GRID_COLOR.r, GRID_COLOR.g, GRID_COLOR.b, static_cast<std::uint8_t>(40.0 * fade));
     };
 
+    // psi at the middle of the view, using the bodies' real sizes
+    const double here = sheet::depthAt(masses, t);
+
+    // Cut every line into pieces so it can bend
+    const int count = 2 * GRID_LINES + 1;
+    const int points = 2 * GRID_LINES * SHEET_PIECES + 1;
+    const double piece = step / SHEET_PIECES;
+    auto at = [&](int family, int line, int point) {
+        const double across = (line - GRID_LINES) * step, along = -reach + point * piece;
+        return family == 0 ? Vector3D(cx + across, cy + along, t.z) : Vector3D(cx + along, cy + across, t.z);
+    };
+
+    // Bent grid: work out how deep each point dips, then scale it so the deepest dip is a
+    // fixed share of the view. The sheet hangs below the bodies' plane
+    const bool bend = sheetDepth > 0.0 && !masses.empty();
+    sheetDips.assign(bend ? static_cast<std::size_t>(2 * count * points) : 0, 0.0);
+    double top = 0.0;
+    if (bend) {
+        const double smoothing = SHEET_SMOOTHING * step;
+        const sheet::FallingFrame falling = sheet::fallingAt(masses, t, smoothing);
+        double low = std::numeric_limits<double>::infinity(), high = -low;
+        for (int f = 0; f < 2; ++f)
+            for (int k = 0; k < count; ++k)
+                for (int j = 0; j < points; ++j) {
+                    const double d = sheet::dip(masses, falling, at(f, k, j), smoothing);
+                    sheetDips[static_cast<std::size_t>((f * count + k) * points + j)] = d;
+                    low = std::min(low, d);
+                    high = std::max(high, d);
+                }
+        top = low;  // the shallowest point sits on the plane
+        // Change the scale gradually so the sheet doesn't jump (big changes happen at once)
+        const double range = high - low;
+        const double want = range > 0.0 ? sheetDepth * camera.distance / range : 0.0;
+        if (sheetScale <= 0.0 || want <= 0.0 || want > 10.0 * sheetScale || want < 0.1 * sheetScale)
+            sheetScale = want;
+        else
+            sheetScale += SHEET_EASE * (want - sheetScale);
+    }
+    auto bent = [&](int f, int k, int j) {
+        Vector3D p = at(f, k, j);
+        const std::size_t index = static_cast<std::size_t>((f * count + k) * points + j);
+        if (bend) p.z -= sheetScale * (sheetDips[index] - top);
+        return p;
+    };
+
     lines.clear();
-    for (int k = -GRID_LINES; k <= GRID_LINES; ++k) {
-        const double across = k * step;
-        for (int j = -GRID_LINES; j < GRID_LINES; ++j) {
-            const double from = j * step, to = (j + 1) * step;
-            addSegment(camera, camera.toCamera(Vector3D(cx + across, cy + from, t.z)),
-                       camera.toCamera(Vector3D(cx + across, cy + to, t.z)), shade(cx + across, cy + from),
-                       shade(cx + across, cy + to));
-            addSegment(camera, camera.toCamera(Vector3D(cx + from, cy + across, t.z)),
-                       camera.toCamera(Vector3D(cx + to, cy + across, t.z)), shade(cx + from, cy + across),
-                       shade(cx + to, cy + across));
+    for (int f = 0; f < 2; ++f) {
+        for (int k = 0; k < count; ++k) {
+            // A flat grid only needs the corners; a bent one needs every piece
+            const int stride = bend ? 1 : SHEET_PIECES;
+            for (int j = 0; j + stride < points; j += stride) {
+                const Vector3D a = bent(f, k, j), b = bent(f, k, j + stride);
+                addSegment(camera, camera.toCamera(a), camera.toCamera(b), shade(a.x, a.y), shade(b.x, b.y));
+            }
         }
     }
     target.draw(lines);
+    return here;
 }
 
 float Renderer::screenRadius(double mass, double radiusAU, double pxPerAU) {
@@ -173,14 +218,13 @@ void Renderer::drawTrails(sf::RenderTarget& target, const Camera& camera, const 
         const std::size_t n = b.trail.size();
         if (n == 0) continue;
         auto alpha = [n](std::size_t k) { return static_cast<std::uint8_t>(170 * k / n); };
-        // Each point is placed at the moment it was recorded, so in the galaxy view the
-        // trail stretches out along the Sun's path
+        // Each point is drawn where it was when recorded (this matters in the galaxy view)
         auto at = [&](std::size_t i) {
             return i < n ? frame.place(b.trail[i].position, b.trail[i].time) : frame.place(b.position);
         };
         Vector3D prev = camera.toCamera(at(0));
         for (std::size_t i = 1; i <= n; ++i) {
-            // the last segment joins the newest sample to the body itself
+            // the last piece connects the trail to the body
             const Vector3D cur = camera.toCamera(at(i));
             addSegment(camera, prev, cur, toColor(b.color, alpha(i - 1)), toColor(b.color, alpha(i)));
             prev = cur;
@@ -199,14 +243,13 @@ void Renderer::drawBodies(sf::RenderTarget& target, const Camera& camera, const 
     for (std::size_t i = 0; i < n; ++i) {
         const Vector3D c = camera.toCamera(frame.place(bodies[i].position));
         depth[i] = c.z;
-        if (!camera.inFront(c)) continue;
+        if (!camera.inFront(c) || bodies[i].isBlackHole()) continue;
         screen[i] = camera.project(c);
         radii[i] = screenRadius(bodies[i].mass, bodies[i].radius, camera.focal() / c.z);
         visible[i] = 1;
     }
 
-    // At low zoom a moon sits inside its planet's marker; hide it until they separate.
-    // Checked heaviest first, against the heaviest bodies
+    // Zoomed out, a moon sits inside its planet's marker; hide it until they separate
     order.resize(n);
     std::iota(order.begin(), order.end(), std::size_t{0});
     std::sort(order.begin(), order.end(),
@@ -248,11 +291,11 @@ void Renderer::drawBodies(sf::RenderTarget& target, const Camera& camera, const 
         const sf::Vector2f p = screen[i];
         const float r = radii[i];
         if (Body::classify(b.mass) == BodyClass::Star) {
-            // a soft halo so stars read as light sources
+            // a soft glow around stars
             drawDisc(target, p, r * 2.8f, toColor(b.color, 16));
             drawDisc(target, p, r * 1.9f, toColor(b.color, 36));
         }
-        // Once the true size has taken over from the marker, the real surface
+        // Close enough: draw the real surface
         const double trueRadius = b.radius * camera.focal() / depth[i];
         const bool surface = trueRadius >= SURFACE_FROM_PX && trueRadius + 1e-3 >= r &&
                              drawSurface(target, camera, frame, b, p, static_cast<float>(trueRadius), sun, julianDay);
@@ -290,8 +333,7 @@ void Renderer::drawRay(sf::RenderTarget& target, const Camera& camera, const Vec
 void Renderer::drawPath(sf::RenderTarget& target, const Camera& camera, const std::vector<Vector3D>& path,
                         Rgb color) {
     if (path.size() < 2) return;
-    // Every other segment, so the line is dashed. The points are equally spaced in
-    // time, so long dashes mean the body is moving fast.
+    // Every other piece, so the line is dashed. Long dashes mean the body moves fast
     lines.clear();
     const sf::Color c = toColor(color, 200);
     for (std::size_t i = 1; i < path.size(); i += 2)
@@ -344,7 +386,7 @@ std::optional<sf::Texture> Renderer::loadTexture(const std::string& file, bool w
         if (!texture.loadFromFile(path)) continue;
         texture.setSmooth(true);
         if (wraps) {
-            // Maps wrap around in longitude, and smaller copies keep a distant planet from shimmering
+            // Maps wrap around, and smaller copies stop distant planets from flickering
             texture.setRepeated(true);
             static_cast<void>(texture.generateMipmap());
         }
@@ -385,25 +427,24 @@ bool Renderer::drawSurface(sf::RenderTarget& target, const Camera& camera, const
     const Surface& maps = surfaceFor(body.name);
     if (!maps.color || !prepareSurfaceShader()) return false;
 
-    // The body's axes now, turned the way the picture is. The shader works in them
+    // Which way the body faces right now
     const spin::Axes axes = spin::eclipticAxes(*model, julianDay);
     const Vector3D ax = frame.direction(axes.x), ay = frame.direction(axes.y), az = frame.direction(axes.z);
     auto local = [&](const Vector3D& v) { return Vector3D(v.dot(ax), v.dot(ay), v.dot(az)); };
 
-    // Lengths in the equatorial radius. Body::radius is the mean radius: the one of a
-    // sphere with the same volume, so equatorial = mean / cbrt(polar / equatorial)
+    // The shader works in units of the body's equator radius
     const double polar = 1.0 - model->flattening;
     const double equatorial = body.radius / std::cbrt(polar);
     const Vector3D center = frame.place(body.position);
-    const Vector3D eye = (camera.target - center) + camera.eyeOffset();  // subtracted in double precision
+    const Vector3D eye = (camera.target - center) + camera.eyeOffset();  // done in double precision
     const double eyeDistance = eye.magnitude();
     const bool isSun = body.name == "Sun";
-    Vector3D light = eye.normalized();  // with no Sun, lit from the eye
+    Vector3D light = eye.normalized();  // no Sun: light it from the eye
     if (sun && !isSun && (*sun - center).lengthSquared() > 0.0) light = (*sun - center).normalized();
 
-    // The square to draw on: the body and its rings, or the whole view when the eye is close
+    // The area to draw on: a square around the body, or the whole view up close
     const bool rings = maps.rings.has_value();
-    const double extent = rings ? SATURN_RING_OUT : 1.0;  // equatorial radii
+    const double extent = rings ? SATURN_RING_OUT : 1.0;  // in body radii
     sf::FloatRect area = camera.viewport;
     if (eyeDistance > 4.0 * extent * equatorial) {
         const float reach = static_cast<float>(radiusPx / std::cbrt(polar) * extent) + 3.f;
@@ -452,28 +493,35 @@ bool Renderer::drawSurface(sf::RenderTarget& target, const Camera& camera, const
     return true;
 }
 
-// ---------------------------------------------------------------------------- Sgr A*
+// ---------------------------------------------------------------------------- Black holes
 
-Renderer::BlackHoleShot Renderer::drawBlackHole(sf::RenderTarget& target, const Camera& camera,
-                                                const SceneFrame& frame, const BlackHoleLook& look) {
-    BlackHoleShot shot;
-    const double rs = blackhole::schwarzschildRadiusAU(galaxy::SGR_A_MASS);
-    const Vector3D center = frame.galacticCenter();
-    // The eye relative to the hole. The two big positions are subtracted first, in double
-    // precision, so nothing 1.7 billion AU from the origin ever reaches the graphics card
+double Renderer::shadowPixels(const Camera& camera, const Vector3D& center, double mass) {
+    const double rs = blackhole::schwarzschildRadiusAU(mass);
+    if (rs <= 0.0) return 0.0;
+    // The eye relative to the hole, worked out in double precision
     const Vector3D eye = (camera.target - center) + camera.eyeOffset();
     const double distance = std::max(eye.magnitude() / rs, 1.01);  // Rs
-    const double focal = camera.focal();
+    // How big the shadow looks from here
+    const double sine = std::min(1.0, blackhole::SHADOW_RADIUS / distance * std::sqrt(1.0 - 1.0 / distance));
+    return camera.focal() * std::tan(std::min(std::asin(sine), 1.45));
+}
 
-    // The shadow's true radius on screen, from its angular size seen from the eye
-    const double sine =
-        std::min(1.0, blackhole::SHADOW_RADIUS / distance * std::sqrt(1.0 - 1.0 / distance));
-    const double shadowPx = focal * std::tan(std::min(std::asin(sine), 1.45));
+Renderer::BlackHoleShot Renderer::drawBlackHole(sf::RenderTarget& target, const Camera& camera,
+                                                const SceneFrame& frame, const BlackHoleLook& look,
+                                                const BlackHoleSight& hole, bool mayTrace) {
+    BlackHoleShot shot;
+    shot.hole = hole;
+    const double rs = blackhole::schwarzschildRadiusAU(hole.mass);
+    if (rs <= 0.0) return shot;
+    const Vector3D eye = (camera.target - hole.center) + camera.eyeOffset();
+    const double distance = std::max(eye.magnitude() / rs, 1.01);  // Rs
+    const double shadowPx = shadowPixels(camera, hole.center, hole.mass);
 
-    // Up close the bending shows all around, even with the hole off to the side or behind
-    if (shadowPx >= TRACE_FROM_PX) shot.rayTraced = traceBlackHole(target, camera, frame, look, eye / rs, distance);
+    // Up close, ray trace the whole view (the bending shows even if the hole is off screen)
+    if (mayTrace && shadowPx >= TRACE_FROM_PX)
+        shot.rayTraced = traceBlackHole(target, camera, frame, look, hole.axis, eye / rs, distance);
 
-    const Vector3D c = camera.toCamera(center);
+    const Vector3D c = camera.toCamera(hole.center);
     if (!camera.inFront(c)) return shot;
     const sf::Vector2f p = camera.project(c);
     const float r = std::max(static_cast<float>(shadowPx), HOLE_MARKER);
@@ -482,7 +530,7 @@ Renderer::BlackHoleShot Renderer::drawBlackHole(sf::RenderTarget& target, const 
     shot.radius = 1.4f * r;
     shot.eyeDistance = distance * rs;
     if (!shot.rayTraced) {
-        const Vector3D axis = frame.fromGalactic(galaxy::sgrASpinAxis());
+        const Vector3D axis = frame.fromGalactic(hole.axis);
         drawFlatBlackHole(target, p, r, axis.dot(camera.rightAxis()), axis.dot(camera.upAxis()));
     }
     return shot;
@@ -499,9 +547,8 @@ bool Renderer::prepareRayTracing() {
 }
 
 bool Renderer::bakeSky() {
-    // The same stars as the starfield, laid out with Galactic longitude across and
-    // latitude down, so the shader can look up the sky in any direction a bent ray ends
-    // up pointing, including off screen. Done once, the first time it's needed
+    // Paint all the stars into one map of the whole sky, so the shader can look up any
+    // direction a bent ray ends up pointing
     const unsigned width = sf::Texture::getMaximumSize() >= 4096u ? 4096u : 2048u;
     const unsigned height = width / 2;
     sf::RenderTexture canvas;
@@ -514,11 +561,11 @@ bool Renderer::bakeSky() {
         const Vector3D& d = star.galactic;
         const double lon = std::atan2(d.y, d.x);
         const double lat = std::asin(std::clamp(d.z, -1.0, 1.0));
-        // Each star covers at least the texel it falls in, so none is too small to land on one
+        // Each star covers at least one pixel
         const float cx = std::floor(static_cast<float>((lon / (2.0 * units::PI) + 0.5) * width)) + 0.5f;
         const float cy = std::floor(static_cast<float>((0.5 - lat / units::PI) * height)) + 0.5f;
         const float half = std::max(0.5f, static_cast<float>(star.size / SKY_FOCAL / texel));
-        // The map stretches the sky toward the poles, so stars there are drawn wider
+        // The map stretches near the poles, so stars there are drawn wider
         const float wide = std::min(64.f, half / static_cast<float>(std::max(0.05, std::cos(lat))));
         const sf::Vector2f p0(cx - wide, cy - half), p1(cx + wide, cy - half), p2(cx + wide, cy + half),
             p3(cx - wide, cy + half);
@@ -527,7 +574,7 @@ bool Renderer::bakeSky() {
     canvas.draw(quads);
     canvas.display();
 
-    // Copied into a plain texture, which has its first row at the top, as the shader expects
+    // Copy into a plain texture, the way the shader expects
     skyMap.emplace();
     if (!skyMap->loadFromImage(canvas.getTexture().copyToImage())) {
         skyMap.reset();
@@ -539,18 +586,20 @@ bool Renderer::bakeSky() {
 }
 
 bool Renderer::traceBlackHole(sf::RenderTarget& target, const Camera& camera, const SceneFrame& frame,
-                              const BlackHoleLook& look, const Vector3D& eyeRs, double distanceRs) {
+                              const BlackHoleLook& look, const Vector3D& holeAxis, const Vector3D& eyeRs,
+                              double distanceRs) {
     if (!prepareRayTracing()) return false;
 
-    // Everything in Galactic coordinates, the frame of the sky map
+    // Everything in Galactic coordinates, like the sky map
     const Vector3D eye = frame.toGalactic(eyeRs);
     const Vector3D right = frame.toGalactic(camera.rightAxis());
     const Vector3D up = frame.toGalactic(camera.upAxis());
     const Vector3D forward = frame.toGalactic(camera.forwardAxis());
     const sf::FloatRect& vp = camera.viewport;
 
-    // Render again only when the picture would change
-    const std::array<double, 16> key = {eye.x / distanceRs,
+    // Only redraw when something changed
+    const Vector3D axis = holeAxis.normalized();
+    const std::array<double, 19> key = {eye.x / distanceRs,
                                         eye.y / distanceRs,
                                         eye.z / distanceRs,
                                         std::log(distanceRs),
@@ -565,14 +614,17 @@ bool Renderer::traceBlackHole(sf::RenderTarget& target, const Camera& camera, co
                                         look.doppler ? 1.0 : 0.0,
                                         static_cast<double>(look.brightness),
                                         static_cast<double>(vp.size.x),
-                                        static_cast<double>(vp.size.y)};
+                                        static_cast<double>(vp.size.y),
+                                        axis.x,
+                                        axis.y,
+                                        axis.z};
     bool changed = !tracedOnce;
     for (std::size_t i = 0; i < key.size() && !changed; ++i) changed = std::abs(key[i] - traceKey[i]) > 1e-9;
     if (changed) {
         traceKey = key;
         sinceChanged.restart();
     }
-    // Half resolution while the view keeps changing, so turning and zooming stay smooth
+    // Half resolution while the view is moving, so it stays smooth
     const float scale = sinceChanged.getElapsedTime().asSeconds() > SETTLE_SECONDS ? 1.f : 0.5f;
 
     if (changed || scale != tracedScale) {
@@ -587,8 +639,10 @@ bool Renderer::traceBlackHole(sf::RenderTarget& target, const Camera& camera, co
         }
         const float w = static_cast<float>(size.x), h = static_cast<float>(size.y);
 
-        const Vector3D axis = galaxy::sgrASpinAxis();
-        const Vector3D axis1 = Vector3D(0.0, 0.0, 1.0).cross(axis).normalized();
+        // Two directions at right angles to the gas's axis
+        Vector3D axis1 = Vector3D(0.0, 0.0, 1.0).cross(axis);
+        if (axis1.lengthSquared() < 1e-12) axis1 = Vector3D(1.0, 0.0, 0.0).cross(axis);
+        axis1 = axis1.normalized();
         const Vector3D axis2 = axis.cross(axis1);
 
         sf::Shader& s = blackHoleShader;
@@ -609,7 +663,7 @@ bool Renderer::traceBlackHole(sf::RenderTarget& target, const Camera& camera, co
         s.setUniform("uEscape", static_cast<float>(std::max(1.1 * distanceRs, 40.0)));
         s.setUniform("uSky", *skyMap);
 
-        // One quad over the whole picture: the shader works out every pixel
+        // One rectangle over the whole picture; the shader colors every pixel
         sf::VertexArray quad(sf::PrimitiveType::TriangleStrip, 4);
         quad[0].position = sf::Vector2f(0.f, 0.f);
         quad[1].position = sf::Vector2f(w, 0.f);
@@ -636,10 +690,9 @@ void Renderer::drawFlatBlackHole(sf::RenderTarget& target, sf::Vector2f at, floa
                                  double spinY) const {
     constexpr int SEGMENTS = 96;
     const float w = 0.4f * radius;
-    // Doppler: the side of the ring whose gas moves toward the eye is brighter. That's
-    // the gas's axis crossed with the direction around the ring, seen along the view
+    // The side of the ring moving toward us is brighter
     auto brightness = [&](double angle) { return 0.62 + 0.6 * (spinX * std::sin(angle) + spinY * std::cos(angle)); };
-    // A band around the hole, its colors set at its inner and outer edges by angle
+    // A colored band around the hole
     auto band = [&](float inner, float outer, auto innerColor, auto outerColor) {
         sf::VertexArray strip(sf::PrimitiveType::TriangleStrip, 2 * (SEGMENTS + 1));
         for (int i = 0; i <= SEGMENTS; ++i) {
@@ -652,7 +705,7 @@ void Renderer::drawFlatBlackHole(sf::RenderTarget& target, sf::Vector2f at, floa
         target.draw(strip);
     };
 
-    // A soft glow, then the ring from its dim outer edge to its bright inner rim
+    // A soft glow, then the ring, brightest at its inner edge
     band(radius, 2.6f * radius, [](double) { return sf::Color(255, 150, 70, 56); },
          [](double) { return sf::Color(255, 150, 70, 0); });
     band(radius + 0.15f * w, radius + 1.05f * w, [](double g) { return holeColor(0.45 * g); },

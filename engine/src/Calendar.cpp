@@ -7,14 +7,14 @@
 namespace emma::calendar {
 
 double julianDayNow() {
-    // The system clock counts from the Unix epoch, 1970-01-01 00:00 UTC = JD 2440587.5
+    // The system clock counts seconds from 1970-01-01, which is Julian day 2440587.5
     const double seconds =
         std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
     return 2440587.5 + seconds / 86400.0;
 }
 
 double startOfDay(double jd) {
-    // Julian days start at noon, so midnight falls on the .5
+    // Julian days start at noon, so midnight is at .5
     return std::floor(jd - 0.5) + 0.5;
 }
 

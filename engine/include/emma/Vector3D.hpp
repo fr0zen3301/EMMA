@@ -5,7 +5,7 @@
 
 namespace emma {
 
-// Header-only 3D vector in double precision
+// A 3D vector (x, y, z) in double precision
 struct Vector3D {
     double x = 0.0;
     double y = 0.0;

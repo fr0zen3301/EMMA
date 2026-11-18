@@ -1,36 +1,31 @@
 #pragma once
 
-// The fragment shader that ray traces Sgr A*. Every pixel follows its light ray backward
-// from the eye through the curved space around a black hole that doesn't spin, with the
-// same velocity Verlet step as emma::blackhole::stepRay. Lengths are in Schwarzschild
-// radii and directions in Galactic coordinates
-//
-// uLook picks what glows around the hole: 0 the thick, see-through gas flow Sgr A*
-// really has, 1 a thin, opaque disk, 2 nothing.
-// Written for GLSL 1.10, which SFML uses: no version line and no precision qualifiers
+// The GPU program that ray traces a black hole. Each pixel follows its light ray backward
+// from the eye, bending around the hole. Lengths are in Schwarzschild radii.
+// Written for GLSL 1.10, the version SFML uses
 inline constexpr const char* BLACK_HOLE_SHADER = R"(
-uniform vec2 uCenter;      // the middle of the picture, in pixels from its bottom left
+uniform vec2 uCenter;      // the middle of the picture, in pixels
 uniform float uFocal;      // focal length, in pixels
 uniform vec3 uEye;         // the eye, relative to the hole
 uniform vec3 uRight;       // the camera's axes
 uniform vec3 uUp;
 uniform vec3 uForward;
-uniform vec3 uAxis;        // the axis the gas turns about
-uniform vec3 uAxis1;       // two directions in the gas's midplane
+uniform vec3 uAxis;        // the axis the gas turns around
+uniform vec3 uAxis1;       // two directions flat across the gas
 uniform vec3 uAxis2;
-uniform float uLook;
-uniform float uBend;       // 1 bends light, 0 lets it go straight
-uniform float uDoppler;    // 1 includes the gas's motion in its color and brightness
+uniform float uLook;       // 0 = real gas, 1 = thin disk, 2 = nothing
+uniform float uBend;       // 1 = light bends, 0 = light goes straight
+uniform float uDoppler;    // 1 = moving gas changes color and brightness
 uniform float uExposure;
-uniform float uEyeShift;   // 1 / sqrt(1 - 1/D): the blueshift from the eye sitting in the hole's pull
-uniform float uEscape;     // a ray beyond this radius, moving outward, has escaped
-uniform sampler2D uSky;    // the starfield by Galactic longitude and latitude
+uniform float uEyeShift;   // the color shift from the eye being in the hole's gravity
+uniform float uEscape;     // a ray moving out past this radius has escaped
+uniform sampler2D uSky;    // the starfield
 
 const float PI = 3.14159265;
-const float DISK_IN = 3.0;        // the innermost stable orbit
+const float DISK_IN = 3.0;        // the disk's inner edge
 const float DISK_OUT = 14.0;
-const float FLUX_PEAK = 0.05665;  // the thin-disk flux profile's highest value, at 49/36 of DISK_IN
-const float T_PEAK = 6500.0;      // kelvin, chosen so the colors read well
+const float FLUX_PEAK = 0.05665;  // the disk's brightest value, used to scale it
+const float T_PEAK = 6500.0;      // kelvin, chosen so the colors look good
 
 float hash(float n) { return fract(sin(n * 127.1) * 43758.5453); }
 
@@ -47,7 +42,7 @@ vec3 sky(vec3 d) {
     return texture2D(uSky, vec2(lon / (2.0 * PI) + 0.5, 0.5 - lat / PI)).rgb;
 }
 
-// The color of a blackbody at a temperature, in kelvin
+// The color of a glowing object at a temperature, in kelvin
 vec3 blackbody(float kelvin) {
     float t = clamp(kelvin, 1000.0, 40000.0) / 100.0;
     float r;
@@ -66,11 +61,10 @@ vec3 blackbody(float kelvin) {
     return clamp(vec3(r, g, b), 0.0, 1.0);
 }
 
-// Black, red, orange, yellow, white: the false-color scale of the EHT's images
+// Black to red to yellow to white, like the EHT's images
 vec3 heat(float k) { return clamp(vec3(2.0 * k, 2.0 * k - 0.5, 2.0 * k - 1.0), 0.0, 1.0); }
 
-// How much light from gas at p is shifted toward the eye, for a ray heading along dir.
-// fraction is the gas's speed as a fraction of a circular orbit's
+// How much the light from gas at p shifts in color on its way to the eye
 float shift(vec3 p, vec3 dir, float fraction) {
     float r = length(p);
     vec3 c = cross(uAxis, p);
@@ -81,7 +75,7 @@ float shift(vec3 p, vec3 dir, float fraction) {
     return sqrt(max(1.0 - 1.0 / r, 0.0)) / (gamma * (1.0 - v * dot(along, -dir))) * uEyeShift;
 }
 
-// The pull that bends a ray into a light ray's path: -(3/2) h^2 x / r^5
+// The pull that bends a ray the way gravity bends light
 vec3 pull(vec3 x, float h2) {
     float r2 = dot(x, x);
     return -1.5 * h2 * x / (r2 * r2 * sqrt(r2)) * uBend;
@@ -95,10 +89,10 @@ void main() {
     float h2 = dot(h, h);
     vec3 a = pull(x, h2);
 
-    vec3 light = vec3(0.0);  // from the thin disk
-    float cover = 0.0;       // how much of what's behind the thin disk hides
-    float glow = 0.0;        // from the gas flow
-    int stop = 0;            // 1 fell in, 2 escaped, 3 hidden behind the disk
+    vec3 light = vec3(0.0);  // light from the thin disk
+    float cover = 0.0;       // how much the disk blocks what's behind it
+    float glow = 0.0;        // light from the gas
+    int stop = 0;            // 1 = fell in, 2 = escaped, 3 = hidden behind the disk
 
     for (int i = 0; i < 600; i++) {
         float r = length(x);
@@ -132,7 +126,7 @@ void main() {
         }
 
         if (uLook < 0.5) {
-            // See-through gas: everything it gives off along the ray adds up
+            // See-through gas: add up its glow along the ray
             vec3 m = 0.5 * (x + xn);
             float rm = length(m);
             if (rm > 1.0 && rm < 200.0) {

@@ -1,12 +1,10 @@
-// Tests for the app's view math: the orbit camera and the scene frame. The camera
-// measures pixels with SFML's sf::Vector2f and sf::FloatRect, so these get their own
-// test program instead of sharing physics_tests, which links only the engine. Those
-// SFML types are header-only, and nothing here opens a window.
+// Tests for the camera, the galaxy view and the bent grid. No window opens.
 // Run them all:  ctest --test-dir build -C Release --output-on-failure
 // Run one:       build/Release/view_tests camera_round_trip
 
 #include "Camera.hpp"
 #include "SceneFrame.hpp"
+#include "SpacetimeSheet.hpp"
 #include "emma/Constants.hpp"
 #include "emma/Galaxy.hpp"
 #include "emma/Vector3D.hpp"
@@ -17,6 +15,7 @@
 #include <cstdio>
 #include <cstring>
 #include <optional>
+#include <vector>
 
 using namespace emma;
 
@@ -50,8 +49,7 @@ double pixelsApart(sf::Vector2f a, sf::Vector2f b) {
     return std::hypot(static_cast<double>(a.x - b.x), static_cast<double>(a.y - b.y));
 }
 
-// A camera like the app's: the view sits right of a 300 pixel sidebar, and the
-// target is off the origin and a little above the ecliptic
+// A camera set up like the app's
 Camera makeCamera(double yawDeg, double pitchDeg) {
     Camera camera;
     camera.viewport = sf::FloatRect({300.f, 0.f}, {1300.f, 860.f});
@@ -61,7 +59,7 @@ Camera makeCamera(double yawDeg, double pitchDeg) {
     return camera;
 }
 
-// The pixel dx, dy from the middle of the view. Positive dy is down the screen
+// A pixel dx, dy from the middle of the view (positive dy is down)
 sf::Vector2f pixel(const Camera& camera, double dx, double dy) {
     const sf::Vector2f m = camera.middle();
     return sf::Vector2f(static_cast<float>(m.x + dx), static_cast<float>(m.y + dy));
@@ -70,10 +68,8 @@ sf::Vector2f pixel(const Camera& camera, double dx, double dy) {
 // ---------------------------------------------------------------------------
 
 void testCameraRoundTrip() {
-    // project() rounds pixels to float, about 7 digits, so a point can't come back
-    // exactly. The error grows with depth and as the view ray grazes the grid. At
-    // these angles it stays at a few millionths of the viewing distance, so the
-    // check allows 1e-5 of it
+    // A point drawn on screen and clicked again should come back to the same place.
+    // Pixels are rounded, so allow a tiny error
     const double yaws[] = {0.0, 37.0, -120.0, 179.0};
     const double pitches[] = {90.0, 60.0, 25.0, 10.0, -40.0};
     const Vector3D offsets[] = {{0.0, 0.0}, {0.7, 0.2}, {-0.5, 0.9}, {0.3, -1.0}, {-1.0, -0.6}};
@@ -89,7 +85,7 @@ void testCameraRoundTrip() {
                   "yaw %.0f, pitch %.0f: the target isn't drawn in the middle of the view", yaw, pitch);
 
             for (const Vector3D& offset : offsets) {
-                const Vector3D p = camera.target + offset;  // on the grid, the plane z = target.z
+                const Vector3D p = camera.target + offset;  // a point on the grid
                 const std::optional<sf::Vector2f> s = camera.toScreen(p);
                 CHECK(s.has_value(), "yaw %.0f, pitch %.0f: grid point %+.1f, %+.1f is behind the eye", yaw, pitch,
                       offset.x, offset.y);
@@ -113,14 +109,13 @@ void testCameraClip() {
     const Camera camera = makeCamera(30.0, 45.0);
     const double nearPlane = Camera::NEAR * camera.distance;
 
-    // All in front: left exactly as it was
+    // All in front: unchanged
     Vector3D a(0.1, 0.2, 2.0), b(-0.3, 0.5, 3.0);
     CHECK(camera.clip(a, b), "a segment in front of the eye was dropped");
     CHECK(same(a, Vector3D(0.1, 0.2, 2.0)) && same(b, Vector3D(-0.3, 0.5, 3.0)),
           "a segment in front of the eye was changed");
 
-    // Crossing the near plane, either way round: the end behind moves onto the
-    // plane, along the segment, and the end in front stays put
+    // Partly behind: the end behind gets cut back, the end in front stays put
     const Vector3D behind(0.4, -0.2, -1.0), front(0.1, 0.3, 2.0);
     const Vector3D along = behind - front;
     for (int order = 0; order < 2; ++order) {
@@ -132,12 +127,12 @@ void testCameraClip() {
         CHECK(same(kept, front), "the end in front of the eye moved");
         CHECK(std::abs(cut.z - nearPlane) < 1e-12 * camera.distance, "cut at depth %.6e, the near plane is at %.6e",
               cut.z, nearPlane);
-        // How far the cut point is from the original line, as a fraction of the segment's length
+        // The cut point should still be on the original line
         const double off = (cut - front).cross(along).magnitude() / along.lengthSquared();
         CHECK(off < 1e-12, "the cut point is %.2e of the segment's length off the line", off);
     }
 
-    // All behind the near plane: nothing left to draw
+    // All behind: nothing left to draw
     Vector3D c(0.2, 0.1, -0.5), d(-0.1, 0.4, 0.5 * nearPlane);
     CHECK(!camera.clip(c, d), "a segment entirely behind the near plane was kept");
 }
@@ -149,7 +144,7 @@ void testCameraZoom() {
     CHECK(before.has_value(), "the cursor isn't over the grid");
     if (!before) return;
 
-    // In and back out: the grid point under the cursor stays under it
+    // Zooming in and out keeps the point under the cursor in place
     const double factors[] = {2.0, 0.5};
     const double distances[] = {1.5, 3.0};
     for (int i = 0; i < 2; ++i) {
@@ -161,7 +156,7 @@ void testCameraZoom() {
               "zooming by %.1f moved the grid point under the cursor", factors[i]);
     }
 
-    // The distance stops at its limits
+    // Zoom stops at its limits
     camera.zoom(1e30);
     CHECK(camera.distance == Camera::MIN_DISTANCE, "zoomed in to %.3e AU, the limit is %.3e", camera.distance,
           Camera::MIN_DISTANCE);
@@ -171,7 +166,7 @@ void testCameraZoom() {
 }
 
 void testCameraPan() {
-    // Grabbing the grid: the point under the cursor follows it
+    // Dragging the grid: the point under the cursor follows it
     Camera camera = makeCamera(-70.0, 35.0);
     const sf::Vector2f from = pixel(camera, -150.0, 60.0), to = pixel(camera, -110.0, 35.0);
     const std::optional<Vector3D> grabbed = camera.pick(from);
@@ -183,8 +178,7 @@ void testCameraPan() {
           "after panning, the grabbed grid point isn't under the cursor");
     CHECK(std::abs(camera.target.z - 0.02) < 1e-14, "panning moved the grid to height %.17g", camera.target.z);
 
-    // Near the horizon a grab would fling the view far away, so it slides by the
-    // drag instead: distance / focal AU per pixel, keeping the grid's height
+    // Near the horizon, dragging slides the view by a fixed amount instead
     Camera low = makeCamera(-70.0, 3.0);
     const sf::Vector2f skyFrom = pixel(low, 0.0, -300.0), skyTo = pixel(low, 30.0, -260.0);
     CHECK(!low.pick(skyFrom), "a pixel above the horizon landed on the grid");
@@ -198,18 +192,16 @@ void testCameraPan() {
 }
 
 void testCameraPickMisses() {
-    // Edge-on, the ray through the middle of the view runs along the grid
+    // Looking edge-on at the grid, a click can't land on it
     const Camera edgeOn = makeCamera(25.0, 0.0);
     CHECK(!edgeOn.pick(edgeOn.middle()), "edge-on, the middle of the view landed on the grid");
 
-    // Above the horizon the grid is behind the eye. The horizon sits
-    // focal * tan(pitch) pixels above the middle
+    // Above the horizon there's no grid to click
     const Camera tilted = makeCamera(25.0, 20.0);
     const double horizon = -tilted.focal() * std::tan(20.0 * units::DEG);
     CHECK(!tilted.pick(pixel(tilted, 0.0, 1.5 * horizon)), "a pixel above the horizon landed on the grid");
 
-    // Just under the horizon the ray meets the grid about 10,000 distances away,
-    // past MAX_PICK. Halfway from there to the middle, it lands one distance / cos(pitch) ahead
+    // Just under the horizon the grid is too far away to count. Halfway down, it isn't
     const Camera low = makeCamera(25.0, 2.0);
     const double lowHorizon = -low.focal() * std::tan(2.0 * units::DEG);
     const std::optional<Vector3D> beyond = low.pick(pixel(low, 0.0, (1.0 - 1e-4) * lowHorizon));
@@ -222,9 +214,7 @@ void testCameraPickMisses() {
 }
 
 void testCameraFit() {
-    // Fit view centers on the barycenter and shows the radius on the short side of
-    // the view. Here that's the height, so from the top view, 5 AU along +y
-    // reaches the top edge
+    // Fit view centers the view and fits the radius into the short side
     Camera camera = makeCamera(0.0, 90.0);
     camera.fit(5.0);
     CHECK(same(camera.target, Vector3D()), "fit left the target at %.3g, %.3g, %.3g", camera.target.x,
@@ -239,8 +229,7 @@ void testCameraFit() {
           "5 AU up the screen didn't reach the top edge of the view");
 }
 
-// The worst project-then-pick round trip over a few grid points around the target,
-// as a fraction of the viewing distance. -1 if a point fails to come back at all
+// The worst draw-then-click error over a few points, or -1 if one fails
 double worstRoundTrip(const Camera& camera) {
     const Vector3D offsets[] = {{0.0, 0.0}, {0.3, 0.2}, {-0.25, 0.1}, {0.1, -0.3}};
     double worst = 0.0;
@@ -255,8 +244,7 @@ double worstRoundTrip(const Camera& camera) {
 }
 
 void testCameraGalacticScale() {
-    // Zoomed all the way out from the Sun, the Galactic center is in view: the short
-    // side of the view reaches about 20 kpc each way
+    // Zoomed all the way out, the Galactic center is in view
     Camera wide = makeCamera(0.0, 90.0);
     wide.target = Vector3D();
     wide.zoom(1e-30);  // as far out as it goes
@@ -267,9 +255,7 @@ void testCameraGalacticScale() {
     CHECK(wideError >= 0.0 && wideError < 1e-5, "zoomed all the way out, the round trip is off by %.2e of the distance",
           wideError);
 
-    // Zoomed in close to the Galactic center, 1.7e9 AU from the origin. Doubles there
-    // are about 2.4e-7 AU apart, and at 0.01 AU a pixel covers about 1e-5 AU, so
-    // picking still lands within a small part of a pixel
+    // Zoomed in close to the Galactic center, very far from the origin, clicks still work
     Camera close = makeCamera(30.0, 50.0);
     close.target = center;
     close.distance = 0.01;
@@ -281,22 +267,21 @@ void testCameraGalacticScale() {
 }
 
 void testSunPath() {
-    const Vector3D p(0.4, -1.1, 0.03);  // AU, ecliptic: a point somewhere in the solar system
+    const Vector3D p(0.4, -1.1, 0.03);  // AU: some point in the solar system
     const double year = units::DAYS_PER_YEAR;
     SceneFrame frame;
     frame.velocity = galaxy::sunVelocityKms() * units::KMS_TO_AU_PER_DAY;
 
-    // Outside the galaxy view the frame changes nothing
+    // The normal view doesn't move anything
     CHECK(same(frame.place(p, 1e6 * year), p), "the normal view moved a point");
 
-    // A year in, the path hasn't yet bent away from a straight line by 1e-5 AU
+    // After a year, the Sun's path is still almost straight
     frame.galactic = true;
     const Vector3D r = galaxy::fromEcliptic(p);
     const double offLine = (frame.place(p, year) - (r + frame.velocity * year)).magnitude();
     CHECK(offLine < 1e-5, "a year in, the path is %.2e AU off the straight line", offLine);
 
-    // 10,000 years in, it has bent toward the Galactic center by the sagitta of the
-    // arc, R0 theta^2 / 2: about 80 AU
+    // After 10,000 years, it has curved about 80 AU toward the Galactic center
     const double t = 1e4 * year;
     const Vector3D bend = frame.place(p, t) - (r + frame.velocity * t);
     const double theta = frame.velocity.y * t / galaxy::R0_AU;
@@ -305,8 +290,7 @@ void testSunPath() {
     CHECK(bend.x > 0.0 && relative(bend.magnitude(), sagitta) < 1e-3,
           "after 10,000 years the path bent %.1f AU, expected %.1f AU toward the center", bend.magnitude(), sagitta);
 
-    // Only the circling part: a quarter of the way round, the Sun has moved R0 along
-    // x and R0 along y. It's still R0 from the center, and moving along +x
+    // A quarter of the way round the Galaxy, the Sun is where it should be and heading the right way
     SceneFrame circling;
     circling.galactic = true;
     circling.velocity = Vector3D(0.0, frame.velocity.y, 0.0);
@@ -317,12 +301,77 @@ void testSunPath() {
     CHECK(relative(circling.heading(), Vector3D(circling.velocity.y, 0.0, 0.0)) < 1e-12,
           "a quarter of the way round, the Sun isn't heading along +x");
 
-    // heading() is the path's own velocity: compare it with a centered difference
+    // heading() should match the path's actual direction
     frame.now = 1e6 * year;
     const double h = 1.0;  // day
     const Vector3D slope = (frame.place(Vector3D(), frame.now + h) - frame.place(Vector3D(), frame.now - h)) / (2.0 * h);
     CHECK(relative(slope, frame.heading()) < 1e-6, "a million years in, heading() is %.2e off the path's direction",
           relative(slope, frame.heading()));
+}
+
+// ---------------------------------------------------------------------------
+// The bent grid's math (SpacetimeSheet.hpp)
+
+void testSheetClocks() {
+    // How much slower clocks run, against known values: on the Sun, at 1 AU, and on Earth
+    const std::vector<sheet::Mass> sun = {sheet::Mass{Vector3D(), 1.0, units::SOLAR_RADIUS_AU}};
+    const std::vector<sheet::Mass> earth = {sheet::Mass{Vector3D(), units::EARTH_MASS, units::EARTH_RADIUS_AU}};
+    const double surface = sheet::clockSlowdown(sheet::depthAt(sun, Vector3D(units::SOLAR_RADIUS_AU, 0.0)));
+    const double orbit = sheet::clockSlowdown(sheet::depthAt(sun, Vector3D(1.0, 0.0)));
+    const double ground = sheet::clockSlowdown(sheet::depthAt(earth, Vector3D(0.0, units::EARTH_RADIUS_AU)));
+    std::printf("  clocks lose %.4e on the Sun, %.4e at 1 AU, %.4e on Earth\n", surface, orbit, ground);
+    CHECK(relative(surface, 2.1225e-6) < 1e-3, "a clock on the Sun's surface loses %.4e, expected 2.1225e-6", surface);
+    CHECK(relative(orbit, 9.8706e-9) < 1e-3, "a clock 1 AU from the Sun loses %.4e, expected 9.8706e-9", orbit);
+    CHECK(relative(ground, 6.961e-10) < 2e-3, "a clock on Earth loses %.4e, expected 6.961e-10", ground);
+
+    // Near a black hole: exact at 1.5 Rs, and stopped at the horizon and inside it
+    const double rs = 2.0 * sheet::GM_PER_C2 * 10.0;
+    const std::vector<sheet::Mass> hole = {sheet::Mass{Vector3D(), 10.0, rs}};
+    const double near = sheet::clockSlowdown(sheet::depthAt(hole, Vector3D(1.5 * rs, 0.0)));
+    CHECK(relative(near, 1.0 - std::sqrt(1.0 / 3.0)) < 1e-12, "at 1.5 Rs a clock loses %.12f, expected %.12f", near,
+          1.0 - std::sqrt(1.0 / 3.0));
+    CHECK(sheet::clockSlowdown(sheet::depthAt(hole, Vector3D(rs, 0.0))) == 1.0, "at the horizon a clock still ticks");
+    CHECK(sheet::clockSlowdown(sheet::depthAt(hole, Vector3D(0.5 * rs, 0.0))) == 1.0, "inside the horizon a clock ticks");
+}
+
+void testSheetBall() {
+    // Inside a body, the well joins the outside smoothly and stays finite at the center
+    const double m = 3.0, s = 0.2;
+    const double below = s * (1.0 - 1e-9), above = s * (1.0 + 1e-9);
+    CHECK(relative(sheet::well(m, below, s), sheet::well(m, above, s)) < 1e-8, "the well jumps at the surface");
+    CHECK(relative(sheet::wellSlope(m, Vector3D(below, 0.0), s), sheet::wellSlope(m, Vector3D(above, 0.0), s)) < 1e-8,
+          "the well's slope jumps at the surface");
+    CHECK(relative(sheet::well(m, 0.0, s), 1.5 * sheet::GM_PER_C2 * m / s) < 1e-15, "the center isn't 1.5 G M / (c^2 R)");
+
+    // The slope matches the well, inside and out
+    for (const double r : {0.5 * s, 2.0 * s}) {
+        const double h = 1e-6 * s;
+        const double numeric = (sheet::well(m, r + h, s) - sheet::well(m, r - h, s)) / (2.0 * h);
+        const double slope = sheet::wellSlope(m, Vector3D(r, 0.0), s).x;
+        CHECK(relative(slope, numeric) < 1e-6, "at r = %.2f the slope is %.6e, the well's gradient %.6e", r, slope,
+              numeric);
+    }
+}
+
+void testSheetFalling() {
+    // Falling at 1 AU from the Sun, the even pull disappears and only the tide is left: the
+    // sheet dips toward the Sun and rises to the sides
+    const std::vector<sheet::Mass> sun = {sheet::Mass{Vector3D(), 1.0, units::SOLAR_RADIUS_AU}};
+    const Vector3D at(1.0, 0.0);
+    const sheet::FallingFrame falling = sheet::fallingAt(sun, at);
+    const double psi = falling.level, d = 0.005;
+    CHECK(sheet::dip(sun, falling, at) == 0.0, "the falling point isn't at the sheet's zero");
+
+    const double along = sheet::dip(sun, falling, at + Vector3D(d, 0.0));
+    const double across = sheet::dip(sun, falling, at + Vector3D(0.0, d));
+    const double tilt = std::abs(falling.slope.dot(Vector3D(d, 0.0)));
+    std::printf("  0.005 AU from the falling point: dip %.3e along, %.3e across; the slope would be %.3e\n", along,
+                across, tilt);
+    CHECK(relative(along, psi * d * d) < 0.02, "along the line to the Sun the sheet dips %.3e, expected %.3e", along,
+          psi * d * d);
+    CHECK(relative(across, -0.5 * psi * d * d) < 0.02, "across it the sheet rises %.3e, expected %.3e", across,
+          -0.5 * psi * d * d);
+    CHECK(std::abs(along) < 0.01 * tilt, "the tide %.3e isn't far below the slope %.3e it replaces", along, tilt);
 }
 
 struct Test {
@@ -339,6 +388,9 @@ const Test TESTS[] = {
     {"camera_fit", testCameraFit},
     {"camera_galactic_scale", testCameraGalacticScale},
     {"sun_path", testSunPath},
+    {"sheet_clocks", testSheetClocks},
+    {"sheet_ball", testSheetBall},
+    {"sheet_falling", testSheetFalling},
 };
 
 }

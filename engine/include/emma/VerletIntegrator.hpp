@@ -5,12 +5,11 @@
 
 namespace emma {
 
-// Velocity Verlet with adaptive splitting. In quiet stretches a step runs as a
-// single piece, so Verlet stays symplectic; through a close pass it splits into
-// as many as MAX_SUBSTEPS pieces
+// Velocity Verlet: fast, and its energy error doesn't build up. During a close pass it
+// splits a step into smaller pieces
 class VerletIntegrator : public Integrator {
 public:
-    static constexpr double ETA = 0.03;        // longest piece, as a fraction of the tightest dynamical time
+    static constexpr double ETA = 0.03;        // a piece lasts at most 3% of the fastest pair's swing time
     static constexpr int MAX_SUBSTEPS = 4096;  // most pieces one step can be split into
 
     int step(World& world, Gravity& gravity, double dt, const std::function<void()>& afterPiece) override;
@@ -24,8 +23,8 @@ private:
     double dynamicalTime(const std::vector<Body>& bodies) const;
 
     std::vector<Vector3D> oldAcceleration;
-    bool stale = true;       // accelerations need computing before the next drift
-    bool jerkValid = false;  // oldAcceleration holds the previous piece's accelerations
+    bool stale = true;       // accelerations need working out before the next step
+    bool jerkValid = false;  // oldAcceleration holds the last piece's accelerations
     double lastPiece = 0.0;  // days, the previous piece's length
 };
 

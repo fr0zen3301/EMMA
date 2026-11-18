@@ -1,8 +1,6 @@
 #pragma once
 
-// EMMA works in the units of solar system dynamics: lengths in astronomical
-// units (AU), masses in solar masses (Msun), time in days. In these units G is
-// the square of the Gaussian gravitational constant k
+// EMMA's units: lengths in AU, masses in solar masses (Msun), time in days
 namespace emma::units {
 
 constexpr double PI = 3.14159265358979323846;
@@ -16,8 +14,9 @@ constexpr double SECONDS_PER_DAY = 86400.0;
 constexpr double DAYS_PER_YEAR = 365.25;           // Julian year
 constexpr double KMS_TO_AU_PER_DAY = SECONDS_PER_DAY / KM_PER_AU;
 
-constexpr double SPEED_OF_LIGHT_KMS = 299792.458;  // exact by the definition of the metre
-constexpr double AU_PER_PARSEC = 648000.0 / PI;    // exact: about 206,265 AU
+constexpr double SPEED_OF_LIGHT_KMS = 299792.458;  // exact
+constexpr double SPEED_OF_LIGHT = SPEED_OF_LIGHT_KMS * KMS_TO_AU_PER_DAY;  // AU per day, about 173.14
+constexpr double AU_PER_PARSEC = 648000.0 / PI;    // about 206,265 AU
 constexpr double AU_PER_LIGHT_YEAR = SPEED_OF_LIGHT_KMS * SECONDS_PER_DAY * DAYS_PER_YEAR / KM_PER_AU;  // about 63,241 AU
 
 constexpr double EARTH_MASS = 1.0 / 332946.0487;   // Msun, IAU 2009

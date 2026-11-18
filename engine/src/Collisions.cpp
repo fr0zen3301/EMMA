@@ -1,4 +1,5 @@
 #include "emma/Collisions.hpp"
+#include "emma/BlackHole.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -19,24 +20,28 @@ bool sweptContact(const Body& a, const Body& b) {
 }
 
 void mergePair(std::vector<Body>& bodies, std::size_t a, std::size_t b, std::vector<MergeFlash>& flashes) {
-    // mass and momentum are conserved and the merged body
-    // carries on from the pair's center of mass. The heavier body keeps its
-    // name, color and trail
-    const std::size_t keepIndex = bodies[a].mass >= bodies[b].mass ? a : b;
+    // The heavier body survives and keeps its name, color and trail. A black hole always
+    // survives. Mass and momentum are kept
+    const bool holeA = bodies[a].isBlackHole(), holeB = bodies[b].isBlackHole();
+    const std::size_t keepIndex = holeA != holeB ? (holeA ? a : b) : (bodies[a].mass >= bodies[b].mass ? a : b);
     const std::size_t goneIndex = keepIndex == a ? b : a;
     Body& keep = bodies[keepIndex];
     Body& gone = bodies[goneIndex];
 
     const double total = keep.mass + gone.mass;
-    const double wk = keep.mass / total, wg = gone.mass / total;
+    // If neither body has mass, the merged body sits halfway between them
+    const double wk = total > 0.0 ? keep.mass / total : 0.5;
+    const double wg = total > 0.0 ? gone.mass / total : 0.5;
     keep.position = keep.position * wk + gone.position * wg;
     keep.previousPosition = keep.previousPosition * wk + gone.previousPosition * wg;
     keep.velocity = keep.velocity * wk + gone.velocity * wg;
-    // The center of mass accelerates at the mass-weighted mean (internal forces cancel),
-    // so the next drift starts from the right acceleration instead of zero
+    // Keep the acceleration too, so the next step starts right
     keep.acceleration = keep.acceleration * wk + gone.acceleration * wg;
 
-    if (keep.isNamed()) {
+    if (keep.isBlackHole()) {
+        // The horizon grows with the mass. The spin stays the same for now
+        keep.radius = blackhole::horizonRadiusAU(total, keep.spin);
+    } else if (keep.isNamed()) {
         const double rk = keep.radius, rg = gone.radius;
         keep.radius = std::cbrt(rk * rk * rk + rg * rg * rg);  // volumes add
     } else {
@@ -54,7 +59,7 @@ bool resolveCollisions(std::vector<Body>& bodies, std::vector<MergeFlash>& flash
     const std::size_t n = bodies.size();
     if (n < 2) return false;
 
-    // Sweep and prune along x
+    // Only check pairs that overlap along x, to skip most pairs quickly
     struct Span {
         double lo, hi;
         std::size_t index;

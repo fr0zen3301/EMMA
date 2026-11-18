@@ -7,8 +7,7 @@
 namespace emma {
 
 namespace {
-// Bodies closer than root size / 2^48 are folded into one point mass.
-// They would have collided and merged long before reaching this depth.
+// How deep the tree can go. Bodies closer than this are treated as one point mass
 constexpr int MAX_DEPTH = 48;
 }
 
@@ -62,7 +61,7 @@ void Octree::subdivide(int n) {
         Node child;
         child.center = c + Vector3D(q & 1 ? h : -h, q & 2 ? h : -h, q & 4 ? h : -h);
         child.halfSize = h;
-        nodes.push_back(child);  // may reallocate: only indices are held across this call
+        nodes.push_back(child);  // the array may move, so only indices are kept
     }
     nodes[n].firstChild = first;
 }
@@ -72,13 +71,13 @@ void Octree::insert(int n, int bi, int depth) {
     const double m = (*source)[bi].mass;
 
     if (nodes[n].firstChild < 0) {
-        if (nodes[n].mass == 0.0) {  // empty leaf: the body lives here
+        if (nodes[n].mass == 0.0) {  // empty: put the body here
             nodes[n].body = bi;
             nodes[n].mass = m;
             nodes[n].com = p;
             return;
         }
-        if (depth >= MAX_DEPTH) {  // unresolvably close: keep them as one point mass
+        if (depth >= MAX_DEPTH) {  // too close to split: treat them as one point mass
             Node& node = nodes[n];
             const double total = node.mass + m;
             node.com = (node.com * node.mass + p * m) / total;
@@ -86,7 +85,7 @@ void Octree::insert(int n, int bi, int depth) {
             node.body = -1;
             return;
         }
-        // occupied leaf: split it and push the resident body down a level
+        // already holds a body: split the cube and move that body down a level
         const int resident = nodes[n].body;
         nodes[n].body = -1;
         subdivide(n);
@@ -96,7 +95,7 @@ void Octree::insert(int n, int bi, int depth) {
         }
     }
 
-    {   // fetch the node again: subdivide and the recursion above may have grown the array
+    {   // look the node up again, since the array may have moved
         Node& node = nodes[n];
         const double total = node.mass + m;
         node.com = (node.com * node.mass + p * m) / total;
@@ -126,8 +125,7 @@ Vector3D Octree::acceleration(std::size_t self, double theta, double softeningSq
         const double size = 2.0 * node.halfSize;
 
         if (node.firstChild < 0 || size * size < theta2 * dist2) {
-            // Plummer-softened point mass: a = G M d / (|d|^2 + eps^2)^(3/2).
-            // This is the exact gradient of the potential totalEnergy() uses.
+            // Far enough away (or a single body): pull as one point mass
             const double r2 = dist2 + softeningSq;
             if (r2 <= 0.0) continue;
             acc += d * (units::G * node.mass / (r2 * std::sqrt(r2)));

@@ -1,3 +1,4 @@
+// Tests for the physics engine.
 // Run them all:  ctest --test-dir build -C Release --output-on-failure
 // Run one:       build/Release/physics_tests earth_year
 
@@ -12,6 +13,7 @@
 #include "emma/Octree.hpp"
 #include "emma/Simulation.hpp"
 #include "emma/Spin.hpp"
+#include "emma/VerletIntegrator.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -66,7 +68,7 @@ void testCalendar() {
 }
 
 void testHorizonsParse() {
-    // A trimmed Horizons VECTORS reply, CSV format, AU and days
+    // A shortened Horizons reply
     const std::string reply =
         "API VERSION: 1.2\n"
         "API SOURCE: NASA/JPL Horizons API\n\n"
@@ -83,7 +85,7 @@ void testHorizonsParse() {
     CHECK(v.x == -1.345678901234567E-02 && v.y == 1.098765432109876E-02, "velocity %.15g, %.15g", v.x, v.y);
     CHECK(p.z == -3.123456789012345E-05 && v.z == 2.345678901234567E-07, "z %.15g, vz %.15g", p.z, v.z);
 
-    // An error reply has no table: its message should come through
+    // An error reply: its message should come through
     const std::string failure = "API VERSION: 1.2\nAPI SOURCE: NASA/JPL Horizons API\n\n"
                                 "    No ephemeris for target \"Foo\" after A.D. 2200-JAN-01\n";
     error.clear();
@@ -96,7 +98,7 @@ void testHorizonsParse() {
 }
 
 void testHorizonsReply() {
-    // A good JSON reply: the table sits in "result", with escaped newlines and quotes
+    // A good reply, with escaped characters to unpack
     const std::string good =
         "{\"signature\":{\"source\":\"NASA/JPL Horizons API\",\"version\":\"1.2\"},"
         "\"result\":\"Target body name: Sun (10)\\n$$SOE\\n"
@@ -111,7 +113,7 @@ void testHorizonsReply() {
     CHECK(horizons::parseStateVector(output, p, v, error) && p.x == 1.0E-03 && v.y == 4.0E-06,
           "table inside the JSON reply not read: %s", error.c_str());
 
-    // Horizons puts errors it detects in "error", sometimes over several lines
+    // An error message spread over several lines
     const std::string failed =
         "{\"signature\":{\"version\":\"1.2\"},\"error\":\" \\n"
         "Insufficient ephemeris data has been loaded to compute the state of 10 (SUN)\\n"
@@ -121,7 +123,7 @@ void testHorizonsReply() {
     CHECK(error.rfind("Insufficient ephemeris data", 0) == 0 && error.find("(SUN) relative") != std::string::npos,
           "error field not read and joined: '%s'", error.c_str());
 
-    // A 400 explains itself in "message"; a 503 may not be JSON at all
+    // Other kinds of error replies
     error.clear();
     CHECK(!horizons::parseReply("{\"message\":\"bad TLIST value\"}", 400, output, error) && error == "bad TLIST value",
           "400 message: '%s'", error.c_str());
@@ -129,7 +131,7 @@ void testHorizonsReply() {
     CHECK(!horizons::parseReply("<html>busy</html>", 503, output, error) && error.find("503") != std::string::npos,
           "503 reply: '%s'", error.c_str());
 
-    // JSON, and a START_TIME span instead of TLIST, which Horizons misread in November 2026
+    // The request asks for JSON and a time span
     const std::string url = horizons::requestUrl("10", 2461355.5);
     CHECK(url.find("format=json") != std::string::npos, "request isn't JSON: %s", url.c_str());
     CHECK(url.find("START_TIME=%27JD2461355.500000%27") != std::string::npos && url.find("TLIST") == std::string::npos,
@@ -137,8 +139,7 @@ void testHorizonsReply() {
 }
 
 void testJ2000Start() {
-    // On 1 January 2000, two days before perihelion, Earth was 0.9833 AU from the
-    // Sun at heliocentric longitude 100.38 deg
+    // On 1 January 2000 Earth was 0.9833 AU from the Sun, at longitude 100.38 deg
     Simulation sim;
     sim.load(Preset::SolarSystem);
     const Vector3D r = find(sim, "Earth").position - find(sim, "Sun").position;
@@ -151,8 +152,7 @@ void testJ2000Start() {
 }
 
 void earthYear(Simulation& sim) {
-    // Time for the Earth-Moon barycenter to go once around the Sun. The sidereal
-    // year is 365.2564 days
+    // Earth (with the Moon) should go once around the Sun in 365.2564 days
     sim.load(Preset::SolarSystem);
     auto angle = [&sim]() {
         const Body& earth = find(sim, "Earth");
@@ -217,7 +217,7 @@ void testConservation() {
 }
 
 void testIas15Conservation() {
-    // The same ten years with IAS15: the errors should sit near rounding, far below Verlet's
+    // Ten years with IAS15: errors should be far smaller than Verlet's
     Simulation sim;
     sim.setIntegrator(std::make_unique<IAS15Integrator>());
     sim.load(Preset::SolarSystem);
@@ -238,7 +238,7 @@ void testIas15Conservation() {
 }
 
 void closePass(Simulation& sim, double tolerance) {
-    // Two Earth-mass bodies miss each other by about 5 Earth radii at 4 km/s
+    // Two Earth-mass bodies narrowly miss each other
     sim.load(Preset::Empty);
     const double m = units::EARTH_MASS;
     const double v = 2.0 * units::KMS_TO_AU_PER_DAY;  // each, so 4 km/s apart
@@ -246,7 +246,7 @@ void closePass(Simulation& sim, double tolerance) {
     sim.addBody(m, Vector3D(-0.01, 0.5 * b), Vector3D(v, 0.0));
     sim.addBody(m, Vector3D(0.01, -0.5 * b), Vector3D(-v, 0.0));
 
-    auto pairEnergy = [&sim, m]() {  // energy of the relative orbit, per unit reduced mass
+    auto pairEnergy = [&sim, m]() {  // the pair's orbital energy
         const auto& bodies = sim.getBodies();
         const Vector3D dv = bodies[1].velocity - bodies[0].velocity;
         const double r = (bodies[1].position - bodies[0].position).magnitude();
@@ -267,21 +267,20 @@ void closePass(Simulation& sim, double tolerance) {
 }
 
 void testClosePass() {
-    // Verlet's split steps leave an error near 1e-4; an unsplit step through this pass is off by order 1
+    // Verlet should keep the energy within 1% through the pass
     Simulation sim;
     closePass(sim, 1e-2);
 }
 
 void testIas15ClosePass() {
-    // IAS15 shortens its own pieces through the pass and should stay far more accurate
+    // IAS15 should be far more accurate
     Simulation sim;
     sim.setIntegrator(std::make_unique<IAS15Integrator>());
     closePass(sim, 1e-7);
 }
 
 void headOnMerge(Simulation& sim) {
-    // Head-on collision with zero total momentum: one body should remain, with
-    // the combined mass, at rest, at the original center of mass
+    // Two bodies collide head-on. One body should be left, with both masses, at rest
     sim.load(Preset::Empty);
     const double m1 = units::EARTH_MASS, m2 = 0.5 * units::EARTH_MASS;
     const double v = 10.0 * units::KMS_TO_AU_PER_DAY;
@@ -312,15 +311,12 @@ void testIas15HeadOnMerge() {
 }
 
 void testCrowdedClosePass() {
-    // Above DIRECT_LIMIT bodies Verlet sizes its pieces from how the accelerations
-    // changed over the last piece. Right after bodies are added or merge there is no
-    // last piece, so it must fall back to the pairwise check, not take the whole step
+    // With many bodies, a close pass right after adding them should still split the step
     Simulation sim;
     sim.load(Preset::Empty);
     for (std::size_t i = 0; i < Simulation::DIRECT_LIMIT; ++i)
         sim.addBody(units::EARTH_MASS, Vector3D(10.0 + static_cast<double>(i), 0.0), Vector3D());
-    // Two bodies 0.01 AU apart, closing at 0.01 AU/day: about a day from meeting,
-    // so the 0.1-day step has to split
+    // Two bodies about a day from meeting
     sim.addBody(units::EARTH_MASS, Vector3D(0.0, 0.0), Vector3D());
     sim.addBody(units::EARTH_MASS, Vector3D(0.01, 0.0), Vector3D(-0.01, 0.0005));
     sim.step();
@@ -329,8 +325,7 @@ void testCrowdedClosePass() {
 }
 
 void testIas15Guard() {
-    // Above DIRECT_LIMIT bodies the tree's approximate forces would make IAS15 crawl,
-    // so Verlet takes over, and IAS15 can't be picked again until the count drops
+    // Too many bodies: IAS15 should switch to Verlet, and stay switched
     Simulation sim;
     sim.setIntegrator(std::make_unique<IAS15Integrator>());
     sim.load(Preset::Empty);
@@ -347,8 +342,7 @@ void testIas15Guard() {
 }
 
 void testBarnesHut() {
-    // The tree against an exact sum over 300 random bodies. With an opening angle
-    // of 0 the tree never approximates, so it must match to rounding
+    // The tree's forces against exact ones for 300 random bodies
     std::mt19937 rng(42);
     std::uniform_real_distribution<double> coordinate(-10.0, 10.0), mass(1e-6, 1e-3);
     std::vector<Body> bodies;
@@ -389,7 +383,7 @@ int indexOf(const Simulation& sim, const char* name) {
 }
 
 void testDominantBody() {
-    // The body that rules a spot sets circular orbits, launch speeds and tooltips
+    // Which body's gravity rules near each star
     Simulation binary;
     binary.load(Preset::AlphaCentauri);
     const int a = indexOf(binary, "Alpha Centauri A"), b = indexOf(binary, "Alpha Centauri B");
@@ -399,7 +393,7 @@ void testDominantBody() {
     CHECK(nearA == a, "0.5 AU from A, body %d rules instead of A (%d)", nearA, a);
     CHECK(nearB == b, "0.5 AU from B, body %d rules instead of B (%d)", nearB, b);
 
-    // In the solar system: Earth close to Earth, the Sun out between the planets
+    // In the solar system: Earth near Earth, the Sun between the planets
     Simulation solar;
     solar.load(Preset::SolarSystem);
     const int earth = indexOf(solar, "Earth"), sun = indexOf(solar, "Sun");
@@ -411,7 +405,7 @@ void testDominantBody() {
 }
 
 void testTrailSmoothness() {
-    // A planet put on a circular 1 AU orbit around Alpha Centauri A
+    // A planet on a circular orbit should leave a smooth trail
     Simulation sim;
     sim.load(Preset::AlphaCentauri);
     const Vector3D start = find(sim, "Alpha Centauri A").position + Vector3D(1.0, 0.0);
@@ -447,13 +441,13 @@ void testClock() {
     CHECK(sim.hasCalendar(), "the solar system has no calendar");
     if (!sim.hasCalendar()) return;
 
-    // Speed: one real second at 10 days/s runs 10 simulated days
+    // One second at 10 days/s runs 10 days
     emma::Clock clock;
     clock.timeScale = 10.0;
     for (int i = 0; i < 60; ++i) clock.run(sim, frame);
     CHECK(std::abs(sim.time() - 10.0) < 0.15, "a second at 10 days/s ran %.3f days", sim.time());
 
-    // Paused: nothing moves, until a step request, which steps and stays paused
+    // Paused: nothing moves, except for a single step
     clock.paused = true;
     const double before = sim.time();
     clock.run(sim, frame);
@@ -462,7 +456,7 @@ void testClock() {
     clock.run(sim, frame);
     CHECK(sim.time() > before && clock.paused, "a step request didn't step and stay paused");
 
-    // Real time: the simulation's clock lands on "now", even a month behind
+    // Real time catches up to now, even from a month behind
     sim.load(Preset::SolarSystem);
     clock = emma::Clock();
     clock.live = true;
@@ -474,10 +468,27 @@ void testClock() {
     CHECK(sim.timeStep() < 1.0 / 86400.0, "the step is %.3g days, real time should step by fractions of a second",
           sim.timeStep());
 
-    // Real time needs dates: Alpha Centauri turns it off
+    // Real time needs dates, so Alpha Centauri turns it off
     sim.load(Preset::AlphaCentauri);
     clock.run(sim, frame, now);
     CHECK(!clock.live, "real time stayed on without a calendar");
+
+    // Run ahead of "now", then turn real time on: it waits, and says how far ahead it is
+    sim.load(Preset::SolarSystem);
+    clock = emma::Clock();
+    clock.timeScale = 365.25;
+    for (int i = 0; i < 60; ++i) clock.run(sim, frame, sim.epoch());
+    clock.live = true;
+    const double ahead = sim.time();
+    const emma::Clock::Report waiting = clock.run(sim, frame, sim.epoch());
+    CHECK(waiting.steps == 0 && relative(waiting.ahead, ahead) < 1e-9,
+          "%.1f days ahead, real time took %d steps and reported %.1f days", ahead, waiting.steps, waiting.ahead);
+
+    // Leaving real time, a slow speed moves at once instead of paying back the gap first
+    clock.live = false;
+    clock.timeScale = 0.375;  // 9 hours a second
+    for (int i = 0; i < 2; ++i) clock.run(sim, frame, sim.epoch());
+    CHECK(sim.time() > ahead, "after leaving real time, 9 hours a second didn't move");
 }
 
 double inclination(const Simulation& sim, const char* name, const char* around) {
@@ -502,7 +513,7 @@ void testInclination() {
     CHECK(std::abs(later - 7.00498) < 0.01, "Mercury's orbit tilted to %.5f deg in 10 years", later);
 }
 
-// How far a 3x3 matrix is from a rotation: the worst error in its rows' lengths and right angles
+// How far a 3x3 matrix is from being a pure rotation
 double rotationError(const double (&m)[3][3]) {
     double worst = 0.0;
     for (int i = 0; i < 3; ++i) {
@@ -515,8 +526,7 @@ double rotationError(const double (&m)[3][3]) {
 }
 
 void testGalacticFrame() {
-    // The table's 10 digits make it a rotation to about 1e-10. A typo in any of its
-    // 9 numbers would show far above that, and straightening would otherwise hide it
+    // The published table should be a rotation, which catches typos
     const double table = rotationError(galaxy::ICRS_TO_GALACTIC);
     const double straightened = rotationError(galaxy::eclipticToGalactic().m);
     std::printf("  the Hipparcos table is off a rotation by %.1e, the matrix EMMA uses by %.1e\n", table,
@@ -548,7 +558,7 @@ void testGalacticFrame() {
 }
 
 // ---------------------------------------------------------------------------
-// Sgr A*. The ray step here is the same as the shader's, so these check what it draws
+// Black hole light. These use the same math as the shader
 
 void testBlackHoleRadius() {
     const double rs = blackhole::schwarzschildRadiusAU(galaxy::SGR_A_MASS);
@@ -559,7 +569,7 @@ void testBlackHoleRadius() {
 }
 
 void testBlackHoleShadow() {
-    // Rays from far away, aimed b Rs off center: inside 2.6 Rs they fall in
+    // Rays aimed closer than 2.6 Rs fall in
     auto aim = [](double b) {
         blackhole::Ray ray = blackhole::startRay(Vector3D(-1000.0, b, 0.0), Vector3D(1.0, 0.0, 0.0));
         return blackhole::traceRay(ray, 1100.0);
@@ -569,8 +579,7 @@ void testBlackHoleShadow() {
 }
 
 void testBlackHolePhotonSphere() {
-    // Light sent sideways at 1.5 Rs goes around in a circle. The circle is unstable, so
-    // it's only followed for a quarter turn
+    // Light at 1.5 Rs goes around in a circle (checked for a quarter turn)
     blackhole::Ray ray = blackhole::startRay(Vector3D(blackhole::PHOTON_SPHERE, 0.0, 0.0), Vector3D(0.0, 1.0, 0.0));
     double worst = 0.0;
     for (int i = 0; i < 1000; ++i) {
@@ -583,7 +592,7 @@ void testBlackHolePhotonSphere() {
 }
 
 void testBlackHoleBending() {
-    // Far from the hole, light passing b Rs away bends by 2 / b radians
+    // Light passing far away bends by the amount Einstein predicted
     const double b = 1000.0;
     blackhole::Ray ray = blackhole::startRay(Vector3D(-1e5, b, 0.0), Vector3D(1.0, 0.0, 0.0));
     const blackhole::RayEnd end = blackhole::traceRay(ray, 1.1e5);
@@ -594,7 +603,7 @@ void testBlackHoleBending() {
 }
 
 void testBlackHoleDoppler() {
-    // At the thin disk's inner edge the gas moves at half the speed of light
+    // Gas at the disk's inner edge moves at half the speed of light
     const double v = blackhole::orbitSpeed(blackhole::ISCO);
     const double toward = blackhole::frequencyShift(blackhole::ISCO, v, 1.0, 1e12);
     const double away = blackhole::frequencyShift(blackhole::ISCO, v, -1.0, 1e12);
@@ -603,6 +612,216 @@ void testBlackHoleDoppler() {
     CHECK(relative(toward, std::sqrt(2.0)) < 1e-9, "gas moving toward the eye shifts by %.6f, expected 1.414214",
           toward);
     CHECK(relative(away, std::sqrt(2.0) / 3.0) < 1e-9, "gas moving away shifts by %.6f, expected 0.471405", away);
+}
+
+// ---------------------------------------------------------------------------
+// Black holes as bodies
+
+void testBlackHoleHorizon() {
+    // Horizon size: Rs with no spin, 0.5316 Rs at the fastest spin
+    const double m = 10.0;
+    const double rs = blackhole::schwarzschildRadiusAU(m);
+    const double fastest = blackhole::horizonRadiusAU(m, blackhole::MAX_SPIN) / rs;
+    std::printf("  horizon at spin 0.998: %.4f Rs\n", fastest);
+    CHECK(relative(blackhole::horizonRadiusAU(m, 0.0), rs) < 1e-15, "a hole that doesn't spin isn't Rs across");
+    CHECK(std::abs(fastest - 0.531607) < 1e-6, "the horizon at spin 0.998 is %.6f Rs, expected 0.531607", fastest);
+    CHECK(blackhole::horizonRadiusAU(m, 1.5) == blackhole::horizonRadiusAU(m, blackhole::MAX_SPIN),
+          "a spin above 0.998 wasn't held at 0.998");
+
+    const Body hole = Body::blackHole("", "", m, 0.5, Vector3D(0.0, 0.0, 2.0), Vector3D(), Vector3D());
+    CHECK(hole.isBlackHole() && hole.spin == 0.5, "Body::blackHole didn't make a black hole with spin 0.5");
+    CHECK(hole.radius == blackhole::horizonRadiusAU(m, 0.5), "a black hole's radius isn't its horizon");
+    CHECK(relative(hole.spinAxis.magnitude(), 1.0) < 1e-15, "the spin axis wasn't normalized");
+    CHECK(hole.description() == "Stellar-mass black hole", "10 Msun is described as '%s'", hole.description().c_str());
+    CHECK(Body::describeBlackHole(4.3e6) == "Supermassive black hole", "Sgr A*'s mass isn't supermassive");
+}
+
+void testBlackHoleSwallow() {
+    // A black hole swallows a heavier star and keeps its name and spin
+    Simulation sim;
+    sim.load(Preset::Empty);
+    sim.addBody(Body::blackHole("Hole", "", 5.0, 0.5, Vector3D(0.0, 0.0, 1.0), Vector3D(-0.1, 0.0), Vector3D()));
+    sim.addBody(20.0, Vector3D(0.1, 0.0), Vector3D());
+    while (sim.time() < 5.0 && sim.getBodyCount() == 2) sim.step();
+    CHECK(sim.getBodyCount() == 1, "%zu bodies left, the star should have fallen in", sim.getBodyCount());
+    if (sim.getBodyCount() != 1) return;
+    const Body& left = sim.getBodies()[0];
+    CHECK(left.isBlackHole() && left.name == "Hole", "the star survived instead of the hole");
+    CHECK(relative(left.mass, 25.0) < 1e-12 && left.spin == 0.5, "mass %.6f and spin %.3f, expected 25 and 0.5",
+          left.mass, left.spin);
+    CHECK(relative(left.radius, blackhole::horizonRadiusAU(25.0, 0.5)) < 1e-12,
+          "the horizon didn't grow with the mass");
+    CHECK(left.velocity.magnitude() < 1e-9, "the merged hole moves at %.2e AU/day, momentum was lost",
+          left.velocity.magnitude());
+}
+
+// ---------------------------------------------------------------------------
+// General relativity: orbits that turn
+
+// An arrow pointing at the orbit's closest point, as long as its eccentricity
+Vector3D eccentricityVector(const Body& host, const Body& b) {
+    const double mu = units::G * (host.mass + b.mass);
+    const Vector3D r = b.position - host.position, v = b.velocity - host.velocity;
+    return (r * (v.lengthSquared() - mu / r.magnitude()) - v * r.dot(v)) / mu;
+}
+
+// An orbit at its closest or farthest point, where the turn is measured
+struct Apsis {
+    double time = 0.0;      // days
+    Vector3D e;             // the eccentricity vector
+    double distance = 0.0;  // AU
+    double speed = 0.0;     // AU per day
+};
+
+// Runs until the star reaches its next closest (or farthest) point. False if it takes too long
+bool nextApsis(Simulation& sim, const char* host, const char* star, bool pericenter, double maxDays, Apsis& out) {
+    auto measure = [&](double& rv, Apsis& a) {
+        const Body& h = find(sim, host);
+        const Body& s = find(sim, star);
+        const Vector3D r = s.position - h.position, v = s.velocity - h.velocity;
+        rv = r.dot(v);
+        a = Apsis{sim.time(), eccentricityVector(h, s), r.magnitude(), v.magnitude()};
+    };
+    double rv0 = 0.0, rv1 = 0.0;
+    Apsis before, after;
+    measure(rv0, before);
+    const double end = sim.time() + maxDays;
+    while (sim.time() < end) {
+        sim.step();
+        measure(rv1, after);
+        if (pericenter ? (rv0 < 0.0 && rv1 >= 0.0) : (rv0 > 0.0 && rv1 <= 0.0)) {
+            const double f = rv0 / (rv0 - rv1);
+            out.time = before.time + (after.time - before.time) * f;
+            out.e = before.e + (after.e - before.e) * f;
+            out.distance = before.distance + (after.distance - before.distance) * f;
+            out.speed = before.speed + (after.speed - before.speed) * f;
+            return true;
+        }
+        rv0 = rv1;
+        before = after;
+    }
+    return false;
+}
+
+// How far the orbit turned between two measurements, in radians
+double turned(const Vector3D& e1, const Vector3D& e2, const Vector3D& h) {
+    return std::atan2(e1.cross(e2).dot(h.normalized()), e1.dot(e2));
+}
+
+// How much relativity turns an orbit each lap
+double relativisticTurn(double totalMass, double a, double e) {
+    return 6.0 * units::PI * units::G * totalMass / (units::SPEED_OF_LIGHT * units::SPEED_OF_LIGHT * a * (1.0 - e * e));
+}
+
+constexpr double ARCSEC = units::DEG / 3600.0;
+constexpr double ARCMIN = units::DEG / 60.0;
+
+// How much Mercury's orbit turns in a century, with just the Sun and Mercury.
+// Also returns relativity's prediction in predicted
+double mercuryTurn(double relativity, double& predicted) {
+    Simulation sim;
+    sim.setIntegrator(std::make_unique<IAS15Integrator>());
+    sim.load(Preset::Empty);
+    sim.setRelativity(relativity);
+    const double mSun = 1.0, mMercury = 1.0 / 6023597.4;
+    const double a = 0.38709927, e = 0.20563593;
+    const double rp = a * (1.0 - e), vp = std::sqrt(units::G * (mSun + mMercury) * (1.0 + e) / rp);
+    sim.addBody(Body("Sun", "", mSun, units::SOLAR_RADIUS_AU, Rgb{}, Vector3D(), Vector3D()));
+    sim.addBody(Body("Mercury", "", mMercury, 2439.7 / units::KM_PER_AU, Rgb{}, Vector3D(rp, 0.0), Vector3D(0.0, vp)));
+
+    const Vector3D e0 = eccentricityVector(find(sim, "Sun"), find(sim, "Mercury"));  // starting at its closest
+    Apsis last{0.0, e0, rp, vp};
+    int laps = 0;
+    Apsis next;
+    while (last.time < 100.0 * units::DAYS_PER_YEAR && nextApsis(sim, "Sun", "Mercury", true, 100.0, next)) {
+        last = next;
+        ++laps;
+    }
+    const Vector3D h = Vector3D(rp, 0.0).cross(Vector3D(0.0, vp));
+    const double century = 100.0 * units::DAYS_PER_YEAR / last.time;
+    predicted = relativity * laps * relativisticTurn(mSun + mMercury, a, e) * century / ARCSEC;
+    return turned(e0, last.e, h) * century / ARCSEC;
+}
+
+void testMercuryPrecession() {
+    double predicted = 0.0, none = 0.0;
+    const double withRelativity = mercuryTurn(1.0, predicted);
+    const double newton = mercuryTurn(0.0, none);
+    std::printf("  Mercury's perihelion turns %.3f\" a century, relativity predicts %.3f\" (observed: 43\")\n",
+                withRelativity, predicted);
+    std::printf("  with Newton's gravity alone it turns %.2e\"\n", newton);
+    CHECK(std::abs(withRelativity - predicted) < 0.01 * predicted, "the perihelion turned %.3f\", expected %.3f\"",
+          withRelativity, predicted);
+    CHECK(std::abs(predicted - 42.98) < 0.05, "relativity's prediction is %.3f\", expected 42.98\"", predicted);
+    CHECK(std::abs(newton) < 0.01 * predicted, "without relativity the perihelion still turned %.3f\"", newton);
+}
+
+// Runs S2's orbit: its 2018 close pass, then how much the orbit turns over one lap
+struct S2Run {
+    bool ok = false;
+    double epoch = 0.0;      // Julian day at time 0
+    Apsis pericenter;
+    double turn = 0.0;       // radians
+    double predicted = 0.0;  // radians
+    double energyDrift = 0.0;
+};
+
+S2Run runS2(std::unique_ptr<Integrator> integrator, double relativity) {
+    Simulation sim;
+    sim.setIntegrator(std::move(integrator));
+    sim.load(Preset::GalacticCenter);
+    sim.setRelativity(relativity);
+    const double e0 = sim.totalEnergy();
+    S2Run run;
+    run.epoch = sim.epoch();
+    Apsis first, second;
+    run.ok = nextApsis(sim, "Sgr A*", "S2", true, 3.0 * units::DAYS_PER_YEAR, run.pericenter) &&
+             nextApsis(sim, "Sgr A*", "S2", false, 20.0 * units::DAYS_PER_YEAR, first) &&
+             nextApsis(sim, "Sgr A*", "S2", false, 20.0 * units::DAYS_PER_YEAR, second);
+    if (!run.ok) return run;
+    run.energyDrift = relative(sim.totalEnergy(), e0);
+    const Body& hole = find(sim, "Sgr A*");
+    const Body& s2 = find(sim, "S2");
+    const Vector3D h = (s2.position - hole.position).cross(s2.velocity - hole.velocity);
+    run.turn = turned(first.e, second.e, h);
+    const double e = first.e.magnitude(), a = first.distance / (1.0 + e);
+    run.predicted = relativity * relativisticTurn(hole.mass + s2.mass, a, e);
+    return run;
+}
+
+void testS2Precession() {
+    // S2's 2018 close pass and its orbit's turn, against GRAVITY's measurements
+    const S2Run ias15 = runS2(std::make_unique<IAS15Integrator>(), 1.0);
+    CHECK(ias15.ok, "S2 didn't pass pericenter and two apocenters");
+    if (!ias15.ok) return;
+    const double year = 2000.0 + (ias15.epoch + ias15.pericenter.time - units::J2000_JD) / units::DAYS_PER_YEAR;
+    const double kms = ias15.pericenter.speed / units::KMS_TO_AU_PER_DAY;
+    std::printf("  S2 at pericenter: %.4f, %.1f AU from Sgr A* at %.0f km/s\n", year, ias15.pericenter.distance, kms);
+    CHECK(std::abs(year - 2018.3789) < 0.01, "S2 passed pericenter in %.4f, expected 2018.3789", year);
+    const double peri = 0.12495 * 8277.0 * (1.0 - 0.88441);
+    CHECK(relative(ias15.pericenter.distance, peri) < 0.02, "S2 passed %.1f AU from Sgr A*, expected %.1f",
+          ias15.pericenter.distance, peri);
+    CHECK(kms > 7500.0 && kms < 7900.0, "S2 passed pericenter at %.0f km/s, expected about 7,700", kms);
+
+    std::printf("  IAS15: S2's orbit turns %.3f' a lap, relativity predicts %.3f' (GRAVITY: 12.1')\n",
+                ias15.turn / ARCMIN, ias15.predicted / ARCMIN);
+    CHECK(std::abs(ias15.turn - ias15.predicted) < 0.01 * ias15.predicted, "S2's orbit turned %.3f', expected %.3f'",
+          ias15.turn / ARCMIN, ias15.predicted / ARCMIN);
+    std::printf("  energy drift over 25 years with relativity: %.2e\n", ias15.energyDrift);
+    CHECK(ias15.energyDrift < 1e-10, "energy drifted by %.2e over 25 years with relativity", ias15.energyDrift);
+
+    const S2Run newton = runS2(std::make_unique<IAS15Integrator>(), 0.0);
+    std::printf("  IAS15 with Newton's gravity alone: %.4f'\n", newton.turn / ARCMIN);
+    CHECK(newton.ok && std::abs(newton.turn) < 0.01 * ias15.predicted, "without relativity S2's orbit turned %.3f'",
+          newton.turn / ARCMIN);
+
+    // Verlet for comparison: its own errors turn the orbit too. Printed, not checked
+    const S2Run verlet = runS2(std::make_unique<VerletIntegrator>(), 1.0);
+    const S2Run verletNewton = runS2(std::make_unique<VerletIntegrator>(), 0.0);
+    if (verlet.ok && verletNewton.ok)
+        std::printf("  Verlet: %.3f' with relativity, %.3f' without: its own error is %.0f%% of relativity's turn\n",
+                    verlet.turn / ARCMIN, verletNewton.turn / ARCMIN,
+                    100.0 * std::abs(verletNewton.turn) / ias15.predicted);
 }
 
 // ---------------------------------------------------------------------------
@@ -616,7 +835,7 @@ void testBodySpin() {
     if (!earth || !moon || !saturn) return;
     CHECK(spin::find("Alpha Centauri A") == nullptr, "a body without a model found one");
 
-    // At J2000 Earth's prime meridian, Greenwich, points to right ascension 190.147 + 90 degrees
+    // Greenwich should point the right way on 1 January 2000
     const spin::Axes q = spin::equatorialAxes(*earth, units::J2000_JD);
     double greenwich = std::atan2(q.x.y, q.x.x) / units::DEG;
     if (greenwich < 0.0) greenwich += 360.0;
@@ -624,8 +843,7 @@ void testBodySpin() {
     CHECK(std::abs(greenwich - 280.147) < 1e-6, "Greenwich points to right ascension %.6f, expected 280.147",
           greenwich);
 
-    // Tilts from the ecliptic's pole: Earth's axis 23.44 degrees, Saturn's 28.05, and the
-    // Moon's about 1.5 (its equator stays close to the ecliptic)
+    // Axis tilts: Earth 23.44 degrees, Saturn 28.05, the Moon about 1.5
     auto tilt = [](const spin::Model& m) {
         return std::acos(spin::eclipticAxes(m, units::J2000_JD).z.z) / units::DEG;
     };
@@ -634,7 +852,7 @@ void testBodySpin() {
     CHECK(std::abs(tilt(*saturn) - 28.05) < 0.1, "Saturn's axis tilts %.3f deg, expected about 28.05", tilt(*saturn));
     CHECK(tilt(*moon) > 1.4 && tilt(*moon) < 1.7, "the Moon's axis tilts %.3f deg, expected about 1.5", tilt(*moon));
 
-    // The axes stay a rotation years later, after millions of degrees of spin
+    // The axes stay accurate after years of spinning
     for (const char* name : {"Earth", "Moon", "Mars", "Jupiter", "Neptune"}) {
         const spin::Axes a = spin::eclipticAxes(*spin::find(name), units::J2000_JD + 9000.5);
         double worst = 0.0;
@@ -676,6 +894,10 @@ const Test TESTS[] = {
     {"black_hole_bending", testBlackHoleBending},
     {"black_hole_doppler", testBlackHoleDoppler},
     {"body_spin", testBodySpin},
+    {"black_hole_horizon", testBlackHoleHorizon},
+    {"black_hole_swallow", testBlackHoleSwallow},
+    {"mercury_precession", testMercuryPrecession},
+    {"s2_precession", testS2Precession},
 };
 
 }

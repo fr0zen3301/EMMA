@@ -19,6 +19,8 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
+#include <cstdio>
 #include <filesystem>
 #include <future>
 #include <optional>
@@ -30,31 +32,31 @@ using namespace emma;
 namespace {
 constexpr float SIDEBAR_WIDTH = 290.f;
 constexpr float STATUS_HEIGHT = 30.f;
-constexpr float ENERGY_REFRESH = 0.25f;     // totalEnergy() is O(N^2): four times a second is plenty
+constexpr float ENERGY_REFRESH = 0.25f;     // seconds between energy checks (they're slow)
 constexpr std::size_t DRIFT_HISTORY = 120;  // 30 seconds of samples
-constexpr double KMS_PER_PIXEL = 0.25;      // drag-launch scale: 4 px of drag per km/s
+constexpr double KMS_PER_PIXEL = 0.25;      // 4 px of drag = 1 km/s
 constexpr double MAX_LAUNCH_KMS = 200.0;
-constexpr float CLICK_SLOP = 4.f;           // px a press can move and still count as a click
+constexpr float CLICK_SLOP = 4.f;           // px the mouse can move and still count as a click
 constexpr double ORBIT_RATE = 0.005;        // radians the view turns per px of right-drag
 const sf::Color ARROW_COLOR(217, 207, 255);
-constexpr double HOLE_VIEW_DISTANCE = 28.0;  // Rs: where "Go to Sgr A*" puts the eye, close enough to see light bend
-constexpr double HOLE_MIN_DISTANCE = 3.0;    // Rs: the closest the eye gets while following Sgr A*
-constexpr double HOLE_VIEW_TILT = 7.0;       // degrees above the disk that "Go to Sgr A*" looks from
-constexpr float DOUBLE_CLICK_SECONDS = 0.4f; // the most time between the two clicks of a double-click
-constexpr float GLIDE_SECONDS = 0.4f;        // how long the view takes to glide to a body you start following
-constexpr double FOLLOW_MIN_RADII = 1.15;    // the closest the eye gets to a followed body, in its radii
+constexpr double HOLE_VIEW_DISTANCE = 28.0;  // Rs: how far "Go to" puts the camera from a hole
+constexpr double HOLE_MIN_DISTANCE = 3.0;    // Rs: the closest the camera gets to a hole
+constexpr double HOLE_VIEW_TILT = 7.0;       // degrees above the disk that "Go to" looks from
+constexpr float DOUBLE_CLICK_SECONDS = 0.4f; // longest gap between the two clicks of a double-click
+constexpr float GLIDE_SECONDS = 0.4f;        // how long the camera takes to glide to a body
+constexpr double FOLLOW_MIN_RADII = 1.15;    // the closest the camera gets to a body, in its radii
+constexpr std::size_t SHEET_MASSES = 32;     // how many of the heaviest bodies bend the grid
 } // namespace
 
 int main(int argc, char** argv) {
-    // 8x multisampling smooths the edges of planets and trails
-    // SFML falls back to the closest level the graphics card supports
+    // Smooth the edges of planets and trails
     sf::ContextSettings settings;
     settings.antiAliasingLevel = 8;
     sf::RenderWindow window(sf::VideoMode({1440u, 900u}), "EMMA (Engine for Multi-body Mechanics and Astrophysics)",
                             sf::Style::Default, sf::State::Windowed, settings);
     window.setFramerateLimit(60);
     if (!ImGui::SFML::Init(window)) return -1;
-    ImGui::GetIO().IniFilename = nullptr;  // the layout is fixed, nothing to save
+    ImGui::GetIO().IniFilename = nullptr;  // don't save the window layout
 
     const std::filesystem::path exeDir =
         argc > 0 ? std::filesystem::path(argv[0]).parent_path() : std::filesystem::path();
@@ -76,24 +78,33 @@ int main(int argc, char** argv) {
         camera.viewport = sf::FloatRect({SIDEBAR_WIDTH, 0.f},
                                         {std::max(1.f, w - SIDEBAR_WIDTH), std::max(1.f, h - STATUS_HEIGHT)});
     };
-    // today's positions from JPL Horizons the app has it
-    // otherwise the last ones saved, otherwise the J2000 orbital elements
+    // Starting positions: download today's, or use the last saved ones, or average orbits
     const double today = calendar::startOfDay(calendar::julianDayNow());
     const std::filesystem::path cachePath = horizons::defaultCachePath();
     std::optional<SolarSnapshot> solarStart = horizons::loadCache(cachePath);
     std::atomic<int> fetchProgress{0};
     std::atomic<bool> fetchCancel{false};
-    // Declared after the atomics it uses, so it is destroyed first: its destructor
-    // waits for a running download, which still reads them until it stops
+    // Must come after the atomics above, so it's destroyed first
     std::future<horizons::Result> fetch;
     bool pausedForFetch = false;
     unsigned long long changesAtFetch = 0;
     std::string sourceNote;
     bool canRetry = false;
 
+    bool presetTurnedView = false;  // the last preset turned the camera, so turn it back next time
     auto loadPreset = [&](Preset preset) {
         sim.load(preset, preset == Preset::SolarSystem && solarStart ? &*solarStart : nullptr);
         camera.fit(sim.viewRadius());
+        const Vector3D look = sim.lookDirection();
+        if (look.lengthSquared() > 0.0) {
+            // Point the camera along the preset's direction
+            const Vector3D d = look.normalized();
+            camera.setAngles(std::atan2(-d.x, d.y), -std::asin(std::clamp(d.z, -1.0, 1.0)));
+            presetTurnedView = true;
+        } else if (presetTurnedView) {
+            camera.topView();
+            presetTurnedView = false;
+        }
         clock.reset();
         clock.timeScale = sim.suggestedTimeScale();
         clock.live = preset == Preset::SolarSystem;  // the solar system starts in real time
@@ -109,7 +120,7 @@ int main(int argc, char** argv) {
         canRetry = false;
         changesAtFetch = sim.changeCount();
         if (sim.preset() == Preset::SolarSystem && !clock.paused) {
-            clock.paused = true;  // hold the old positions still until today's arrive
+            clock.paused = true;  // wait for today's positions
             pausedForFetch = true;
         }
     };
@@ -125,19 +136,21 @@ int main(int argc, char** argv) {
     bool pressing = false, dragging = false, panning = false, orbiting = false;
     sf::Vector2f pressAt, mouse, lastDrag;
     float zoomVelocity = 0.f;
-    bool pressOnBody = false;          // the left press landed on a body
-    bool clickedBody = false;          // and the last click did too, for double-clicks
+    bool pressOnBody = false;          // the click started on a body
+    bool clickedBody = false;          // the last click was on a body too (for double-clicks)
     sf::Clock sinceClick;
     sf::Vector2f lastClickAt;
-    std::optional<Vector3D> glideFrom;  // where the view was when it started gliding to a followed body
+    std::optional<Vector3D> glideFrom;  // where the camera started gliding from
     float glideTime = 0.f;
-    Renderer::BlackHoleShot lastHole;   // where Sgr A* was drawn last frame, for picking it
+    std::vector<Renderer::BlackHoleShot> lastHoles;  // where black holes were drawn last frame, for clicks
 
     // Timing and diagnostics
     sf::Clock frameClock;
     float behindTimer = 0.f;
-    float energyTimer = ENERGY_REFRESH;  // refresh on the first frame
+    double realTimeAhead = 0.0;  // days the simulation is ahead of the clock, from last frame
+    float energyTimer = ENERGY_REFRESH;  // check on the first frame
     unsigned long long baselineChange = ~0ull;
+    double clockSlowdown = -1.0;  // for the sidebar's clock readout
     double baseEnergy = 0.0, energyDrift = 0.0, momentumDrift = 0.0;
     Vector3D baseMomentum;
     std::vector<float> driftHistory;
@@ -145,8 +158,7 @@ int main(int argc, char** argv) {
     auto inViewport = [&](sf::Vector2f p) {
         return camera.viewport.contains(p) && !ImGui::GetIO().WantCaptureMouse;
     };
-    // Drag from the press point -> launch speed (km/s) and direction (radians, world frame).
-    // The direction is the one the drag covers on the grid
+    // Turns a mouse drag into a launch speed and direction
     auto dragLaunch = [&](sf::Vector2f to, double& speedKms, double& angle) {
         const sf::Vector2f d = to - pressAt;
         speedKms = std::min(MAX_LAUNCH_KMS, std::hypot(static_cast<double>(d.x), static_cast<double>(d.y)) * KMS_PER_PIXEL);
@@ -154,39 +166,64 @@ int main(int argc, char** argv) {
         if (from && toward && (toward->x != from->x || toward->y != from->y))
             angle = std::atan2(toward->y - from->y, toward->x - from->x);
         else
-            angle = std::atan2(-static_cast<double>(d.y), static_cast<double>(d.x)) + camera.yaw();  // screen y is down
+            angle = std::atan2(-static_cast<double>(d.y), static_cast<double>(d.x)) + camera.yaw();  // screen y points down
     };
-    // Launch velocity in the inertial frame. Speed and direction are relative to the
-    // body that dominates gravity at the spawn point, so a launch near Earth moves with Earth
+    // The new body's velocity. It's relative to whatever it's near, so a launch near Earth
+    // moves along with Earth
     auto launchVelocity = [&](const Vector3D& at, double speedKms, double angle) -> Vector3D {
         if (state.autoOrbit) return sim.circularVelocity(at);
         const int host = sim.dominantBody(at);
         const Vector3D base = host >= 0 ? sim.getBodies()[static_cast<std::size_t>(host)].velocity : Vector3D();
         return base + Vector3D(std::cos(angle), std::sin(angle)) * (speedKms * units::KMS_TO_AU_PER_DAY);
     };
-    auto spawnMass = [&]() { return std::pow(10.0, static_cast<double>(state.massExponent)); };
+    auto spawnMass = [&]() {
+        return std::pow(10.0, static_cast<double>(state.spawnHole ? state.holeMassExponent : state.massExponent));
+    };
+    auto spawnRadius = [&]() {
+        const double mass = spawnMass();
+        return state.spawnHole ? blackhole::horizonRadiusAU(mass, state.holeSpin) : Body::radiusForMass(mass);
+    };
 
-    // The name Follow uses for whatever is under a pixel: a named body or Sgr A*. Empty for
-    // nothing, and for bodies you added, which have no name
+    // The name of whatever is under a pixel, or empty
     auto nameUnder = [&](sf::Vector2f p) -> std::string {
         const std::vector<Body>& bodies = sim.getBodies();
         const int i = ui::bodyAt(bodies, camera, frame, p);
         if (i >= 0) return bodies[static_cast<std::size_t>(i)].name;
-        if (lastHole.visible) {
-            const float reach = std::max(lastHole.radius, 8.f);
-            const sf::Vector2f d = p - lastHole.at;
-            if (d.x * d.x + d.y * d.y <= reach * reach) return ui::SGR_A;
-        }
+        for (const Renderer::BlackHoleShot& hole : lastHoles)
+            if (ui::overBlackHole(hole, p)) return hole.hole.name;
         return {};
     };
-    // Follows something new, gliding there instead of jumping
+    // A line for a black hole's tooltip saying where it is
+    auto holeWhere = [&](const Renderer::BlackHoleShot& shot) -> std::string {
+        const std::vector<Body>& bodies = sim.getBodies();
+        char line[160];
+        if (shot.hole.body < 0) {
+            double sunDistance = galaxy::R0_AU;
+            for (const Body& b : bodies)
+                if (b.name == "Sun") sunDistance = (frame.place(b.position) - shot.hole.center).magnitude();
+            std::snprintf(line, sizeof(line), "Distance: %s from the Sun", ui::formatDistance(sunDistance).c_str());
+            return line;
+        }
+        const std::size_t index = static_cast<std::size_t>(shot.hole.body);
+        if (index >= bodies.size()) return {};
+        const Body& hole = bodies[index];
+        const int hostIndex = sim.dominantBody(hole.position, shot.hole.body);
+        if (hostIndex < 0 || bodies[static_cast<std::size_t>(hostIndex)].mass <= hole.mass) return {};
+        const Body& host = bodies[static_cast<std::size_t>(hostIndex)];
+        const std::string hostName = host.isNamed() ? host.name : host.description();
+        std::snprintf(line, sizeof(line), "Distance: %s from %s\nSpeed: %.2f km/s relative to %s",
+                      ui::formatDistance((hole.position - host.position).magnitude()).c_str(), hostName.c_str(),
+                      (hole.velocity - host.velocity).magnitude() / units::KMS_TO_AU_PER_DAY, hostName.c_str());
+        return line;
+    };
+    // Starts following something, gliding there smoothly
     auto startFollowing = [&](const std::string& name) {
         if (name.empty() || state.follow == name) return;
         state.follow = name;
         glideFrom = camera.target;
         glideTime = 0.f;
     };
-    // Points the view at a followed body, partway there while gliding
+    // Points the camera at a followed body (partway, while still gliding)
     auto aimAt = [&](const Vector3D& p, float dt) {
         if (!glideFrom) {
             camera.target = p;
@@ -209,7 +246,7 @@ int main(int argc, char** argv) {
                 layout(resized->size);
             } else if (const auto* wheel = event->getIf<sf::Event::MouseWheelScrolled>()) {
                 if (wheel->wheel == sf::Mouse::Wheel::Vertical && inViewport(sf::Vector2f(wheel->position))) {
-                    // Scrolling in over a body follows it, so the zoom heads straight for it
+                    // Scrolling in over a body starts following it
                     if (wheel->delta > 0.f) startFollowing(nameUnder(sf::Vector2f(wheel->position)));
                     zoomVelocity += wheel->delta;
                 }
@@ -232,8 +269,7 @@ int main(int argc, char** argv) {
             } else if (const auto* release = event->getIf<sf::Event::MouseButtonReleased>()) {
                 if (release->button == sf::Mouse::Button::Left) {
                     if (pressing && pressOnBody && !dragging) {
-                        // A click on a body picks it instead of placing a new body on top of it.
-                        // A second click on it soon after follows it
+                        // Clicking a body doesn't add a new one. Double-clicking follows it
                         const sf::Vector2f at(release->position);
                         const sf::Vector2f d = at - lastClickAt;
                         const bool twice = clickedBody &&
@@ -251,7 +287,13 @@ int main(int argc, char** argv) {
                         if (const std::optional<Vector3D> at = camera.pick(pressAt)) {
                             double speed = state.speedKms, angle = state.angle;
                             if (dragging) dragLaunch(sf::Vector2f(release->position), speed, angle);
-                            sim.addBody(spawnMass(), *at, launchVelocity(*at, speed, angle));
+                            const Vector3D velocity = launchVelocity(*at, speed, angle);
+                            // A new hole spins around the grid's up axis
+                            if (state.spawnHole)
+                                sim.addBody(Body::blackHole("", "", spawnMass(), state.holeSpin,
+                                                            Vector3D(0.0, 0.0, 1.0), *at, velocity));
+                            else
+                                sim.addBody(spawnMass(), *at, velocity);
                         }
                         clickedBody = false;
                     }
@@ -265,7 +307,7 @@ int main(int argc, char** argv) {
                 const sf::Vector2f at(moved->position);
                 if (panning) {
                     camera.pan(lastDrag, at);
-                    state.follow.clear();  // panning moves the view off the followed body
+                    state.follow.clear();  // panning stops following
                     glideFrom.reset();
                     lastDrag = at;
                 } else if (orbiting) {
@@ -276,7 +318,7 @@ int main(int argc, char** argv) {
                     const sf::Vector2f d = at - pressAt;
                     if (d.x * d.x + d.y * d.y > CLICK_SLOP * CLICK_SLOP) {
                         dragging = true;
-                        state.autoOrbit = false;  // the drag sets the velocity now
+                        state.autoOrbit = false;  // the drag sets the velocity
                     }
                 }
             } else if (const auto* key = event->getIf<sf::Event::KeyPressed>()) {
@@ -300,14 +342,14 @@ int main(int argc, char** argv) {
         ImGui::SFML::Update(window, elapsed);
         mouse = sf::Vector2f(sf::Mouse::getPosition(window));
 
-        // Zoom toward the cursor or toward the followed body with a little inertia
+        // Smooth zoom, toward the cursor or the followed body
         if (std::abs(zoomVelocity) > 0.01f) {
             const double factor = std::pow(1.0 / 0.9, static_cast<double>(zoomVelocity));
             if (state.follow.empty()) camera.zoomAt(mouse, factor);
             else camera.zoom(factor);
             zoomVelocity *= 0.85f;
         }
-        // The panel follows the drag, so a plain click afterwards repeats the same shot
+        // Copy the drag into the sidebar, so the next click repeats it
         if (dragging) {
             double speed = 0.0, angle = 0.0;
             dragLaunch(mouse, speed, angle);
@@ -322,7 +364,7 @@ int main(int argc, char** argv) {
                 if (result.ok) {
                     solarStart = result.snapshot;
                     horizons::saveCache(cachePath, *solarStart);
-                    // Swap in today's positions, unless the scene changed while we waited
+                    // Use today's positions, unless the user changed things while waiting
                     if (sim.preset() == Preset::SolarSystem && sim.changeCount() == changesAtFetch) {
                         sim.load(Preset::SolarSystem, &*solarStart);
                         clock.reset();
@@ -350,11 +392,21 @@ int main(int argc, char** argv) {
         stats.momentumDrift = momentumDrift;
         stats.driftHistory = &driftHistory;
         stats.behind = behindTimer > 0.f;
+        stats.aheadDays = realTimeAhead;
         stats.sourceNote = sourceNote;
         stats.canRetry = canRetry && !fetch.valid();
         stats.sunTravelled = state.sunSpeedKms * units::KMS_TO_AU_PER_DAY * sim.time();
-        ui::drawSidebar(state, clock, stats, sim.preset(), sim.getBodies(), sim.getIntegrator().name(), SIDEBAR_WIDTH,
-                        height - STATUS_HEIGHT);
+        stats.clockSlowdown = clockSlowdown;
+        // Which black hole Go to jumps to
+        bool anyHole = sim.preset() == Preset::SolarSystem;
+        std::string holeTarget = anyHole ? ui::SGR_A : "";
+        for (const Body& b : sim.getBodies()) {
+            if (!b.isBlackHole()) continue;
+            anyHole = true;
+            if (holeTarget.empty() && b.isNamed()) holeTarget = b.name;
+        }
+        ui::drawSidebar(state, clock, stats, sim.preset(), sim.getBodies(), sim.getIntegrator().name(), anyHole,
+                        holeTarget.empty() ? nullptr : holeTarget.c_str(), SIDEBAR_WIDTH, height - STATUS_HEIGHT);
         ui::drawStatusBar(sim, camera, frame, mouse, clock, height - STATUS_HEIGHT, width, STATUS_HEIGHT);
 
         if (state.presetRequested >= 0) {
@@ -367,17 +419,18 @@ int main(int argc, char** argv) {
             state.integratorRequested = -1;
             baselineChange = ~0ull;
         }
+        const double relativity = state.relativity ? static_cast<double>(state.relativityScale) : 0.0;
+        if (relativity != sim.relativity()) {
+            sim.setRelativity(relativity);
+            baselineChange = ~0ull;  // the energy changes too, so restart the drift readout
+        }
         if (state.resetRequested) {
             loadPreset(sim.preset());
             state.resetRequested = false;
         }
-        if (state.clearRequested) {
-            sim.clear();
-            state.clearRequested = false;
-        }
         if (state.resetViewRequested) {
             camera.fit(sim.viewRadius());
-            if (frame.galactic) state.follow = "Sun";  // the start point is far behind by now
+            if (frame.galactic) state.follow = "Sun";  // in the galaxy view, stay with the Sun
             else state.follow.clear();
             state.resetViewRequested = false;
         }
@@ -391,15 +444,29 @@ int main(int argc, char** argv) {
         }
         if (state.goToHoleRequested) {
             state.goToHoleRequested = false;
-            if (sim.preset() == Preset::SolarSystem) {
-                state.follow = ui::SGR_A;
-                glideFrom.reset();  // a jump across the Galaxy, not a glide
-                camera.distance = HOLE_VIEW_DISTANCE * blackhole::schwarzschildRadiusAU(galaxy::SGR_A_MASS);
-                // Turn the view so the gas's axis points up the screen, then tip it so the eye
-                // sits a few degrees above the disk: the disk lies flat across the picture
-                Vector3D axis = frame.fromGalactic(galaxy::sgrASpinAxis());
+            // Find the hole's mass and the axis its gas turns around
+            double holeMass = 0.0;
+            Vector3D holeAxis;
+            if (sim.preset() == Preset::SolarSystem && holeTarget == ui::SGR_A) {
+                holeMass = galaxy::SGR_A_MASS;
+                holeAxis = galaxy::sgrASpinAxis();
+            } else {
+                for (const Body& b : sim.getBodies()) {
+                    if (b.isBlackHole() && !holeTarget.empty() && b.name == holeTarget) {
+                        holeMass = b.mass;
+                        holeAxis = galaxy::fromEcliptic(b.spinAxis);
+                        break;
+                    }
+                }
+            }
+            if (holeMass > 0.0) {
+                state.follow = holeTarget;
+                glideFrom.reset();  // jump straight there
+                camera.distance = HOLE_VIEW_DISTANCE * blackhole::schwarzschildRadiusAU(holeMass);
+                // Look at the disk from just above it, so it lies flat across the picture
+                Vector3D axis = frame.fromGalactic(holeAxis);
                 if (axis.z < 0.0) axis = -axis;
-                const double upright = std::acos(std::min(1.0, axis.z));  // the pitch that points the axis up
+                const double upright = std::acos(std::min(1.0, axis.z));
                 const double tilt = HOLE_VIEW_TILT * units::DEG;
                 camera.setAngles(std::atan2(-axis.x, axis.y), upright > tilt ? upright - tilt : upright + tilt);
             }
@@ -408,17 +475,17 @@ int main(int argc, char** argv) {
         // ------------------------------------------------------------------ physics
         const emma::Clock::Report ran = clock.run(sim, static_cast<double>(frameDt));
         behindTimer = ran.behind ? 1.f : std::max(0.f, behindTimer - frameDt);
+        realTimeAhead = ran.ahead;
         sim.updateEffects(frameDt);
 
-        // The galaxy view: the picture turned into Galactic coordinates and carried along
-        // the Sun's path. Only the solar system knows which way it faces in the Galaxy
+        // The galaxy view (solar system only)
         frame.galactic = state.galaxyView && sim.preset() == Preset::SolarSystem;
         frame.velocity = galaxy::sunVelocityKms().normalized() * (state.sunSpeedKms * units::KMS_TO_AU_PER_DAY);
         frame.now = sim.time();
         if (frame.galactic != wasGalactic) {
             wasGalactic = frame.galactic;
             if (frame.galactic) {
-                // Ride along with the Sun, looking across its path from a little above the plane
+                // Follow the Sun, looking across its path from a little above
                 state.follow = "Sun";
                 camera.setAngles(0.5 * units::PI, 25.0 * units::DEG);
             } else {
@@ -427,36 +494,35 @@ int main(int argc, char** argv) {
             }
         }
 
-        // Keep the followed body in the middle. It may be gone after a merge or a new preset
-        if (state.follow == ui::SGR_A) {
-            if (sim.preset() == Preset::SolarSystem) {
-                aimAt(frame.galacticCenter(), frameDt);
-                camera.distance = std::max(camera.distance,
-                                           HOLE_MIN_DISTANCE * blackhole::schwarzschildRadiusAU(galaxy::SGR_A_MASS));
-            } else {
-                state.follow.clear();
-            }
+        // Keep the followed body in the middle of the view
+        if (state.follow == ui::SGR_A && sim.preset() == Preset::SolarSystem) {
+            aimAt(frame.galacticCenter(), frameDt);
+            camera.distance = std::max(camera.distance,
+                                       HOLE_MIN_DISTANCE * blackhole::schwarzschildRadiusAU(galaxy::SGR_A_MASS));
         } else if (!state.follow.empty()) {
             const std::vector<Body>& bodies = sim.getBodies();
             const auto followed = std::find_if(bodies.begin(), bodies.end(),
                                                [&state](const Body& b) { return b.name == state.follow; });
             if (followed != bodies.end()) {
                 aimAt(frame.place(followed->position), frameDt);
-                // Zooming in stops just outside the surface
-                camera.distance = std::max(camera.distance, FOLLOW_MIN_RADII * followed->radius);
+                // Don't zoom inside the body
+                const double closest = followed->isBlackHole()
+                                           ? HOLE_MIN_DISTANCE * blackhole::schwarzschildRadiusAU(followed->mass)
+                                           : FOLLOW_MIN_RADII * followed->radius;
+                camera.distance = std::max(camera.distance, closest);
             } else {
                 state.follow.clear();
             }
         }
         if (state.follow.empty()) glideFrom.reset();
 
-        // Conservation check, a few times per second
+        // Check energy and momentum a few times a second
         energyTimer += frameDt;
         if (energyTimer >= ENERGY_REFRESH) {
             energyTimer = 0.f;
             const double energy = sim.totalEnergy();
             const Vector3D momentum = sim.angularMomentum();
-            if (sim.changeCount() != baselineChange) {  // bodies added, merged or loaded
+            if (sim.changeCount() != baselineChange) {  // bodies changed: start a new baseline
                 baselineChange = sim.changeCount();
                 baseEnergy = energy;
                 baseMomentum = momentum;
@@ -472,33 +538,87 @@ int main(int argc, char** argv) {
         // ------------------------------------------------------------------ drawing
         window.clear(Renderer::SPACE_COLOR);
         renderer.drawStarfield(window, camera, frame);
-        // Sgr A*: only the solar system knows where the Galactic center is. Up close it's
-        // ray traced over the starfield, so it comes before everything else
-        Renderer::BlackHoleShot hole;
+        // Black holes go first, since a ray-traced one covers the whole view
+        std::vector<Renderer::BlackHoleSight> sights;
         if (sim.preset() == Preset::SolarSystem) {
-            const Renderer::BlackHoleLook look{state.holeLook, state.holeBendLight, state.holeDoppler,
-                                               state.holeBrightness};
-            hole = renderer.drawBlackHole(window, camera, frame, look);
+            Renderer::BlackHoleSight landmark;
+            landmark.center = frame.galacticCenter();
+            landmark.mass = galaxy::SGR_A_MASS;
+            landmark.axis = galaxy::sgrASpinAxis();
+            landmark.name = ui::SGR_A;
+            landmark.kind = "Supermassive black hole";
+            sights.push_back(landmark);
         }
-        lastHole = hole;
-        if (state.showGrid) renderer.drawGrid(window, camera);
+        for (std::size_t i = 0; i < sim.getBodies().size(); ++i) {
+            const Body& b = sim.getBodies()[i];
+            if (!b.isBlackHole()) continue;
+            Renderer::BlackHoleSight sight;
+            sight.center = frame.place(b.position);
+            sight.mass = b.mass;
+            sight.spin = b.spin;
+            sight.axis = galaxy::fromEcliptic(b.spinAxis);
+            sight.name = b.name;
+            sight.kind = b.description();
+            sight.body = static_cast<int>(i);
+            sights.push_back(sight);
+        }
+        // Only ray trace the one that looks biggest
+        std::size_t traced = sights.size();
+        double biggest = -1.0;
+        for (std::size_t k = 0; k < sights.size(); ++k) {
+            const double px = Renderer::shadowPixels(camera, sights[k].center, sights[k].mass);
+            if (px > biggest) {
+                biggest = px;
+                traced = k;
+            }
+        }
+        const Renderer::BlackHoleLook look{state.holeLook, state.holeBendLight, state.holeDoppler,
+                                           state.holeBrightness};
+        std::vector<Renderer::BlackHoleShot> holes;
+        if (traced < sights.size()) holes.push_back(renderer.drawBlackHole(window, camera, frame, look, sights[traced], true));
+        for (std::size_t k = 0; k < sights.size(); ++k)
+            if (k != traced) holes.push_back(renderer.drawBlackHole(window, camera, frame, look, sights[k], false));
+        lastHoles = holes;
+        clockSlowdown = -1.0;
+        if (state.showGrid && state.bendGrid) {
+            // The masses that bend the grid: the heaviest bodies, plus Sgr A* in the solar system
+            std::vector<sheet::Mass> masses;
+            if (sim.preset() == Preset::SolarSystem)
+                masses.push_back(sheet::Mass{frame.galacticCenter(), galaxy::SGR_A_MASS,
+                                             blackhole::schwarzschildRadiusAU(galaxy::SGR_A_MASS)});
+            const std::vector<Body>& bodies = sim.getBodies();
+            std::vector<std::size_t> heaviest;
+            for (std::size_t i = 0; i < bodies.size(); ++i)
+                if (bodies[i].mass > 0.0) heaviest.push_back(i);
+            const std::size_t keep = std::min(SHEET_MASSES, heaviest.size());
+            std::partial_sort(heaviest.begin(), heaviest.begin() + static_cast<std::ptrdiff_t>(keep), heaviest.end(),
+                              [&bodies](std::size_t a, std::size_t b) { return bodies[a].mass > bodies[b].mass; });
+            for (std::size_t k = 0; k < keep; ++k) {
+                const Body& b = bodies[heaviest[k]];
+                masses.push_back(sheet::Mass{frame.place(b.position), b.mass, b.radius});
+            }
+            const double psi = renderer.drawGrid(window, camera, masses, static_cast<double>(state.gridDepth));
+            clockSlowdown = masses.empty() ? -1.0 : sheet::clockSlowdown(psi);
+        } else if (state.showGrid) {
+            renderer.drawGrid(window, camera);
+        }
         if (state.showTrails) renderer.drawTrails(window, camera, frame, sim.getBodies());
-        // The planets' surfaces turn with the date; without a calendar, J2000 stands in
+        // Surfaces turn with the date (year 2000 if there's no calendar)
         renderer.drawBodies(window, camera, frame, sim.getBodies(),
                             sim.hasCalendar() ? sim.epoch() + sim.time() : units::J2000_JD);
         renderer.drawFlashes(window, camera, frame, sim.flashes);
         if (frame.galactic && frame.velocity.lengthSquared() > 0.0) {
-            // Which way the solar system is heading now, from its barycenter
+            // An arrow showing which way the solar system is heading
             const Vector3D from = frame.place(Vector3D());
             const Vector3D to = from + frame.heading().normalized() * (0.6 * camera.distance);
             renderer.drawRay(window, camera, from, to, sf::Color(217, 207, 255, 140));
             ui::drawTag(camera, to, "Sun's direction of motion");
         }
 
-        // Preview of the next body: ghost, velocity arrow and predicted path
+        // Preview of the next body: ghost, arrow and predicted path
         const bool hovering = !pressing && !panning && !orbiting && inViewport(mouse);
         const sf::Vector2f anchor = pressing ? pressAt : mouse;
-        // No preview over a body: a click there picks the body instead of placing one
+        // No preview over a body, since clicking there selects it
         const bool onBody = pressing ? pressOnBody && !dragging : hovering && !nameUnder(mouse).empty();
         const std::optional<Vector3D> at =
             (pressing || hovering) && !onBody && !frame.galactic ? camera.pick(anchor) : std::nullopt;
@@ -507,14 +627,13 @@ int main(int argc, char** argv) {
             if (dragging) dragLaunch(mouse, speed, angle);
             const Vector3D velocity = launchVelocity(*at, speed, angle);
             const double mass = spawnMass();
-            const Rgb color = Body::colorForMass(mass);
+            const Rgb color = state.spawnHole ? Body::HOLE_COLOR : Body::colorForMass(mass);
 
             if (state.showPath) renderer.drawPath(window, camera, sim.predictPath(*at, velocity), color);
-            renderer.drawGhost(window, anchor,
-                               Renderer::screenRadius(mass, Body::radiusForMass(mass), camera.pxPerAUAt(*at)), color);
+            renderer.drawGhost(window, anchor, Renderer::screenRadius(mass, spawnRadius(), camera.pxPerAUAt(*at)),
+                               color);
 
-            // Arrow for the velocity relative to the dominant body, pointing the way that
-            // velocity looks on screen, with a length set by its speed
+            // The velocity arrow: its length shows the speed
             const int host = sim.dominantBody(*at);
             const Vector3D relative =
                 velocity - (host >= 0 ? sim.getBodies()[static_cast<std::size_t>(host)].velocity : Vector3D());
@@ -533,22 +652,28 @@ int main(int argc, char** argv) {
             if (dragging) ui::drawLaunchReadout(mouse, speed, angle);
         }
 
-        if (state.showLabels) ui::drawLabels(camera, frame, sim.getBodies());
-        if (state.showLabels && hole.visible) ui::drawBlackHoleLabel(camera, hole.at, hole.radius);
+        if (state.showLabels) {
+            ui::drawLabels(camera, frame, sim.getBodies());
+            for (const Renderer::BlackHoleShot& h : holes) ui::drawBlackHoleLabel(camera, h);
+        }
         if (hovering) {
-            double sunDistance = galaxy::R0_AU;
-            for (const Body& b : sim.getBodies())
-                if (b.name == "Sun") sunDistance = (frame.place(b.position) - frame.galacticCenter()).magnitude();
-            const bool overHole = hole.visible && ui::drawBlackHoleTooltip(hole.at, hole.radius, mouse, sunDistance,
-                                                                           hole.eyeDistance, hole.rayTraced);
-            if (!overHole) ui::drawBodyTooltip(sim, camera, frame, mouse);
+            // A body in front of a black hole gets the tooltip
+            const Renderer::BlackHoleShot* overHole = nullptr;
+            if (ui::bodyAt(sim.getBodies(), camera, frame, mouse) < 0)
+                for (const Renderer::BlackHoleShot& h : holes)
+                    if (ui::overBlackHole(h, mouse)) {
+                        overHole = &h;
+                        break;
+                    }
+            if (overHole) ui::drawBlackHoleTooltip(*overHole, holeWhere(*overHole));
+            else ui::drawBodyTooltip(sim, camera, frame, mouse);
         }
 
         ImGui::SFML::Render(window);
         window.display();
     }
 
-    fetchCancel = true;  // a running download stops after its current request
+    fetchCancel = true;  // stop any download that's still running
     ImGui::SFML::Shutdown();
     return 0;
 }

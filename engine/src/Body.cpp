@@ -1,4 +1,5 @@
 #include "emma/Body.hpp"
+#include "emma/BlackHole.hpp"
 #include "emma/Constants.hpp"
 #include <algorithm>
 #include <cmath>
@@ -8,13 +9,17 @@ namespace emma {
 
 namespace {
 
-// Class boundaries in solar masses
+// Where one kind of body ends and the next begins, in solar masses
 constexpr double TERRAN_LIMIT = 2.04 * units::EARTH_MASS;
 constexpr double NEPTUNIAN_LIMIT = 0.414 * units::JUPITER_MASS;
 constexpr double DEUTERIUM_LIMIT = 13.0 * units::JUPITER_MASS;   // planet / brown dwarf
 constexpr double HYDROGEN_LIMIT = 0.08;                          // brown dwarf / star
 
-// Main-sequence relations in solar units
+// Black hole classes, in solar masses
+constexpr double INTERMEDIATE_HOLE = 100.0;
+constexpr double SUPERMASSIVE_HOLE = 1e5;
+
+// Size and brightness of normal stars from their mass, in Sun units
 double mainSequenceRadius(double m) {
     return m < 1.0 ? std::pow(m, 0.8) : std::pow(m, 0.57);
 }
@@ -36,6 +41,22 @@ Body::Body(std::string n, std::string k, double m, double r, Rgb c,
            const Vector3D& pos, const Vector3D& vel)
     : mass(m), radius(r), position(pos), velocity(vel), previousPosition(pos),
       color(c), name(std::move(n)), kind(std::move(k)) {}
+
+Body Body::blackHole(std::string n, std::string k, double m, double s, const Vector3D& axis,
+                     const Vector3D& pos, const Vector3D& vel) {
+    const double a = std::clamp(s, 0.0, blackhole::MAX_SPIN);
+    Body hole(std::move(n), std::move(k), m, blackhole::horizonRadiusAU(m, a), HOLE_COLOR, pos, vel);
+    hole.type = BodyType::BlackHole;
+    hole.spin = a;
+    if (axis.lengthSquared() > 0.0) hole.spinAxis = axis.normalized();
+    return hole;
+}
+
+std::string Body::describeBlackHole(double m) {
+    if (m >= SUPERMASSIVE_HOLE) return "Supermassive black hole";
+    if (m >= INTERMEDIATE_HOLE) return "Intermediate-mass black hole";
+    return "Stellar-mass black hole";
+}
 
 BodyClass Body::classify(double m) {
     if (m < TERRAN_LIMIT) return BodyClass::RockyBody;
@@ -67,8 +88,7 @@ std::string Body::describe(double m) {
 double Body::radiusForMass(double m) {
     if (m >= HYDROGEN_LIMIT) return mainSequenceRadius(m) * units::SOLAR_RADIUS_AU;
 
-    // Chen & Kipping (2017) piecewise power law, worked in Earth units:
-    // rocky R ~ M^0.279, Neptunian R ~ M^0.589, Jovian and brown dwarfs R ~ M^-0.044
+    // Planet sizes from their mass (Chen & Kipping 2017), worked out in Earth units
     const double me = m / units::EARTH_MASS;
     const double terranEdge = TERRAN_LIMIT / units::EARTH_MASS;
     const double neptunianEdge = NEPTUNIAN_LIMIT / units::EARTH_MASS;
@@ -83,7 +103,7 @@ double Body::radiusForMass(double m) {
 }
 
 double Body::stellarTemperature(double m) {
-    // Stefan-Boltzmann: L = 4 pi R^2 sigma T^4, so T = T_sun (L / R^2)^(1/4) in solar units
+    // A star's surface temperature from its brightness and size (Stefan-Boltzmann law)
     const double r = mainSequenceRadius(m);
     return units::SUN_TEMPERATURE * std::pow(mainSequenceLuminosity(m) / (r * r), 0.25);
 }
@@ -94,7 +114,7 @@ Rgb Body::colorForMass(double m) {
     case BodyClass::NeptuneLike: return Rgb{125, 175, 225};
     case BodyClass::GasGiant: return Rgb{216, 184, 140};
     case BodyClass::BrownDwarf: {
-        // Brown dwarfs run from about 800 K to 2300 K; heavier ones are hotter
+        // Brown dwarfs range from 800 K to 2300 K; heavier ones are hotter
         const double t = std::log(m / DEUTERIUM_LIMIT) / std::log(HYDROGEN_LIMIT / DEUTERIUM_LIMIT);
         return blackbody(800.0 + 1500.0 * t);
     }
@@ -104,7 +124,7 @@ Rgb Body::colorForMass(double m) {
 }
 
 Rgb Body::blackbody(double kelvin) {
-    // Tanner Helland's fit to the CIE blackbody colors, good from 1000 K to 40000 K
+    // The color of a glowing object at this temperature (Tanner Helland's fit, 1000 to 40000 K)
     const double t = std::clamp(kelvin, 1000.0, 40000.0) / 100.0;
     double r, g, b;
     if (t <= 66.0) {

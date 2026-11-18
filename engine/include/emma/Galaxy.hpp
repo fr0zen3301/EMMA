@@ -3,17 +3,13 @@
 #include "emma/Vector3D.hpp"
 #include <cmath>
 
-// The Galactic frame and the Sun's motion through it. Galactic coordinates (IAU 1958,
-// in the ICRS form of the Hipparcos Catalogue) put x toward the Galactic center, y
-// toward Galactic rotation (longitude 90 degrees) and z toward the north Galactic
-// pole. EMMA works in the J2000 ecliptic frame, so a direction goes
-// ecliptic -> equatorial (ICRS) -> Galactic
+// The Galactic frame and the Sun's path around the Galaxy. In Galactic coordinates x points
+// to the Galactic center, y the way the Galaxy turns, and z to the north Galactic pole
 namespace emma::galaxy {
 
-constexpr double OBLIQUITY = 84381.448 / 3600.0 * units::DEG;  // tilt of the ecliptic to the equator at J2000
+constexpr double OBLIQUITY = 84381.448 / 3600.0 * units::DEG;  // Earth's axial tilt at J2000
 
-// ICRS to Galactic: each row is one Galactic axis written in ICRS coordinates
-// (The Hipparcos and Tycho Catalogues, ESA 1997, vol. 1, p. 92)
+// Turns equatorial (ICRS) directions into Galactic ones (Hipparcos Catalogue, ESA 1997)
 constexpr double ICRS_TO_GALACTIC[3][3] = {
     {-0.0548755604, -0.8734370902, -0.4838350155},
     {+0.4941094279, -0.4448296300, +0.7469822445},
@@ -21,7 +17,7 @@ constexpr double ICRS_TO_GALACTIC[3][3] = {
 };
 
 constexpr double R0_KPC = 8.15;             // Sun to the Galactic center (Reid et al. 2019)
-constexpr double ORBIT_SPEED_KMS = 247.0;   // the Sun's speed along its orbit, Theta0 + V_sun (Reid et al. 2019)
+constexpr double ORBIT_SPEED_KMS = 247.0;   // the Sun's speed around the Galaxy (Reid et al. 2019)
 constexpr double U_SUN_KMS = 11.1;          // the Sun's drift toward the Galactic center (Schoenrich et al. 2010)
 constexpr double W_SUN_KMS = 7.25;          // and toward the north Galactic pole (Schoenrich et al. 2010)
 
@@ -32,9 +28,12 @@ constexpr double SGR_A_MASS = 4.3e6;  // Msun, the black hole at the Galactic ce
 // Where Sgr A* is, relative to the Sun's starting point, in Galactic coordinates
 inline Vector3D galacticCenter() { return Vector3D(R0_AU, 0.0, 0.0); }
 
-// The axis the gas around Sgr A* turns about, in Galactic coordinates. It's tilted
-// about 35 degrees from the direction to the Sun. The EHT rules out more than 50
-// degrees, and the exact angle isn't known
+// Sgr A*'s position on the sky (Reid & Brunthaler 2004)
+constexpr double SGR_A_RA = (17.0 + 45.0 / 60.0 + 40.0409 / 3600.0) * 15.0 * units::DEG;
+constexpr double SGR_A_DEC = -(29.0 + 0.0 / 60.0 + 28.118 / 3600.0) * units::DEG;
+
+// The axis Sgr A*'s gas turns around, 35 degrees from the direction to the Sun.
+// The real angle isn't known
 inline Vector3D sgrASpinAxis() { return Vector3D(-0.819, 0.574, 0.0).normalized(); }
 
 // A 3x3 rotation. Its inverse is its transpose
@@ -53,7 +52,7 @@ struct Rotation {
     }
 };
 
-// Ecliptic to equatorial is a turn by the obliquity about the x axis (the equinox)
+// Ecliptic to equatorial: a turn by Earth's tilt around the x axis
 inline Vector3D eclipticToEquatorial(const Vector3D& e) {
     const double c = std::cos(OBLIQUITY), s = std::sin(OBLIQUITY);
     return Vector3D(e.x, c * e.y - s * e.z, s * e.y + c * e.z);
@@ -64,12 +63,8 @@ inline Vector3D equatorialToEcliptic(const Vector3D& q) {
     return Vector3D(q.x, c * q.y + s * q.z, -s * q.y + c * q.z);
 }
 
-// Ecliptic to Galactic in one matrix: the ICRS matrix after the obliquity turn.
-// The table's 10 digits make it a rotation only to about 1e-10, and its transpose
-// undoes it only that well. So the matrix is straightened as it's built: the pole
-// row keeps its direction, the x row loses the small part along the pole, and y is
-// z cross x. Each axis moves by about 1e-10, and the transpose becomes the inverse
-// to the last digit of a double
+// Ecliptic to Galactic in one matrix. The published table has only 10 digits, so the
+// matrix is cleaned up into an exact rotation as it's built
 inline const Rotation& eclipticToGalactic() {
     static const Rotation rotation = [] {
         const double c = std::cos(OBLIQUITY), s = std::sin(OBLIQUITY);
@@ -95,23 +90,32 @@ inline const Rotation& eclipticToGalactic() {
 inline Vector3D fromEcliptic(const Vector3D& e) { return eclipticToGalactic().apply(e); }
 inline Vector3D toEcliptic(const Vector3D& g) { return eclipticToGalactic().applyInverse(g); }
 
+// Three directions on the sky at (ra, dec), seen from Earth: north, east, and the line of
+// sight away from us. Orbits measured on the sky, like the S-stars', use these
+struct SkyFrame {
+    Vector3D north, east, away;
+};
+
+inline SkyFrame skyFrame(double ra, double dec) {
+    const double ca = std::cos(ra), sa = std::sin(ra), cd = std::cos(dec), sd = std::sin(dec);
+    return SkyFrame{equatorialToEcliptic(Vector3D(-sd * ca, -sd * sa, cd)),
+                    equatorialToEcliptic(Vector3D(-sa, ca, 0.0)),
+                    equatorialToEcliptic(Vector3D(cd * ca, cd * sa, sd))};
+}
+
 // The Sun's velocity relative to the Galactic center, in Galactic coordinates (km/s)
 inline Vector3D sunVelocityKms() { return Vector3D(U_SUN_KMS, ORBIT_SPEED_KMS, W_SUN_KMS); }
 
-// Where the Sun is t days after time 0, relative to where it was then (AU, Galactic),
-// for a Sun moving at v (AU per day, Galactic) at time 0. The part of v along Galactic
-// rotation carries it around a circle of radius R0 about the Galactic center, which
-// sits at +x. The small drifts toward the center and the pole stay straight lines:
-// they are really slow oscillations, tens of millions of years long.
-// R0 (1 - cos a) is written 2 R0 sin^2(a / 2). They're equal, but for the tiny angles
-// here 1 - cos a would throw away about half the digits
+// How far the Sun has moved t days after time 0 (AU, Galactic). It circles the Galactic
+// center; its small drifts toward the center and the pole are kept as straight lines.
+// 2 sin^2(a/2) is used instead of 1 - cos a, which loses precision for tiny angles
 inline Vector3D sunDisplacement(const Vector3D& v, double t) {
     const double angle = v.y * t / R0_AU;
     const double half = std::sin(0.5 * angle);
     return Vector3D(2.0 * R0_AU * half * half + v.x * t, R0_AU * std::sin(angle), v.z * t);
 }
 
-// The Sun's velocity t days after time 0: the circling part turned through the same angle
+// The Sun's velocity t days after time 0, turned along its circle
 inline Vector3D sunVelocityAt(const Vector3D& v, double t) {
     const double angle = v.y * t / R0_AU;
     return Vector3D(v.y * std::sin(angle) + v.x, v.y * std::cos(angle), v.z);

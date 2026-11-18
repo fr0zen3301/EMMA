@@ -21,8 +21,7 @@ void World::moveToBarycenter() {
 }
 
 void World::recordTrails() {
-    // A new point each time a body's direction of travel has turned by TRAIL_TURN
-    // since the last one
+    // Add a point each time a body's direction has turned by TRAIL_TURN
     static const double cosTurn = std::cos(TRAIL_TURN);
     for (Body& b : bodies) {
         const double speed = b.velocity.magnitude();

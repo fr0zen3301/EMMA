@@ -15,15 +15,14 @@
 
 namespace emma {
 
-// A running system: a World, the gravity and integrator that move it, and the
-// collisions between its bodies. The app talks to the engine through this class.
-// No rendering in here
+// A running system: its bodies, the gravity and integrator that move them, and collisions.
+// The app talks to the engine through this class
 class Simulation {
 public:
     static constexpr float FLASH_LIFETIME = 0.5f;  // seconds of real time
-    static constexpr double MIN_STEP = 1e-9;       // days (under 0.1 ms), the shortest step limitStep() allows
+    static constexpr double MIN_STEP = 1e-9;       // days (under 0.1 ms), the shortest step allowed
 
-    // The parts' settings, under the names the app and tests already use
+    // Settings from the parts, under the names the app and tests use
     static constexpr double SOFTENING = Gravity::SOFTENING;
     static constexpr double THETA = Gravity::THETA;
     static constexpr std::size_t DIRECT_LIMIT = Gravity::DIRECT_LIMIT;
@@ -32,29 +31,32 @@ public:
     static constexpr std::size_t MAX_TRAIL = World::MAX_TRAIL;
     static constexpr double TRAIL_TURN = World::TRAIL_TURN;
 
-    // With a snapshot, the solar system starts from it. without, from the J2000 orbital elements
+    // Loads a preset. The solar system uses the snapshot if there is one
     void load(Preset preset, const SolarSnapshot* snapshot = nullptr);
     void clear();
 
     void step();                       // one fixed step of timeStep() days
-    // Shortens the step to at most maxDays, for slow speeds and real time. The preset's
-    // own step stays the upper limit
+    // Makes the step shorter for slow speeds and real time (never longer than the preset's)
     void limitStep(double maxDays);
     void updateEffects(float realDt);  // merge flashes
 
     void addBody(double mass, const Vector3D& position, const Vector3D& velocity);
+    // Any body, such as a black hole from Body::blackHole
+    void addBody(const Body& body);
 
-    // Swaps the integrator. The new one starts knowing nothing about the bodies.
-    // Above DIRECT_LIMIT bodies, one that needs exact forces (IAS15) gives way to Verlet
+    // 0 = Newton only, 1 = real relativity, more = exaggerated
+    void setRelativity(double factor);
+    double relativity() const { return gravity.relativity; }
+
+    // Swaps the integrator. Above DIRECT_LIMIT bodies, IAS15 gives way to Verlet
     void setIntegrator(std::unique_ptr<Integrator> next);
     const Integrator& getIntegrator() const { return *integrator; }
 
-    // The body whose gravity dominates at p: the smallest Laplace sphere of
-    // influence containing p, otherwise the strongest pull. -1 with no bodies
+    // The body whose gravity rules at p, or -1 if there are no bodies
     int dominantBody(const Vector3D& p, int exclude = -1) const;
-    // Velocity for a circular, prograde orbit around the dominant body at p
+    // Velocity for a circular orbit around the body that rules at p
     Vector3D circularVelocity(const Vector3D& p) const;
-    // Where a massless body starting at p with velocity v would go
+    // The path a new body starting at p with velocity v would follow
     std::vector<Vector3D> predictPath(const Vector3D& p, const Vector3D& v) const;
 
     double totalEnergy() const;      // Msun AU^2 / day^2
@@ -69,6 +71,8 @@ public:
     bool hasCalendar() const { return world.hasCalendar; }  // true when time 0 is a real date
     double epoch() const { return world.epoch; }      // Julian day at time 0
     double viewRadius() const { return viewRadiusAU; }
+    // The direction the preset is best seen along; zero for any
+    const Vector3D& lookDirection() const { return lookAlong; }
     double suggestedTimeScale() const { return timeScaleHint; }
     Preset preset() const { return currentPreset; }
     unsigned long long changeCount() const { return world.changes; }  // bumps on add, merge, load, clear
@@ -77,7 +81,7 @@ public:
 
 private:
     int strongestPull(const Vector3D& p, int exclude) const;
-    void checkIntegrator();  // Verlet takes over from IAS15 above DIRECT_LIMIT bodies
+    void checkIntegrator();  // switches IAS15 to Verlet above DIRECT_LIMIT bodies
 
     World world;
     Gravity gravity;
@@ -86,6 +90,7 @@ private:
     double dt = 0.1;
     double baseDt = 0.1;  // the preset's step, before limitStep()
     double viewRadiusAU = 2.0;
+    Vector3D lookAlong;
     double timeScaleHint = 30.0;
     int lastSubsteps = 1;
 };

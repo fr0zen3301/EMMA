@@ -11,8 +11,7 @@
 namespace emma::horizons {
 namespace {
 
-// Horizons IDs in SolarSnapshot order. Mars to Neptune are their system
-// barycenters, which matches the system masses EMMA uses for them
+// Horizons' ID for each body. Mars to Neptune include their moons, like their masses do
 const char* const COMMANDS[SOLAR_BODY_COUNT] = {"10", "199", "299", "399", "301", "4", "5", "6", "7", "8"};
 
 const char* const CACHE_HEADER = "EMMA Horizons cache v2";
@@ -32,14 +31,12 @@ bool parseNumber(const std::string& field, double& out) {
     return end == t.c_str() + t.size();
 }
 
-// Rows of = or - are banner lines, not messages
+// True for lines made only of = or - (decoration)
 bool isRule(const std::string& t) {
     return t.find_first_not_of("=-") == std::string::npos;
 }
 
-// Something readable from Horizons text. Its error comes after the API header
-// lines and a "Toolkit version" line, framed by rows of =, and can run over
-// several lines
+// Pulls a readable error message out of Horizons' text
 std::string firstMessage(const std::string& text) {
     std::istringstream lines(text);
     std::string line, message;
@@ -54,14 +51,13 @@ std::string firstMessage(const std::string& text) {
         if (!message.empty()) message += ' ';
         message += t;
     }
-    while (!message.empty() && message.back() == '.') message.pop_back();  // the caller adds its own period
+    while (!message.empty() && message.back() == '.') message.pop_back();  // the caller adds a period
     if (message.empty()) return "Horizons sent no data";
     return message.size() > 160 ? message.substr(0, 160) + "..." : message;
 }
 
 // ---------------------------------------------------------------------------
-// Just enough JSON to read a Horizons reply: the string fields of the top-level
-// object ("result", "error", "message"). Everything else is skipped
+// A tiny JSON reader: just enough to get the text fields out of Horizons' reply
 
 void skipSpace(const std::string& s, std::size_t& i) {
     while (i < s.size() && (s[i] == ' ' || s[i] == '\t' || s[i] == '\n' || s[i] == '\r')) ++i;
@@ -99,7 +95,7 @@ bool readHex4(const std::string& s, std::size_t i, unsigned long& value) {
     return true;
 }
 
-// A JSON string starting at the quote s[i]; i ends just past the closing quote
+// Reads a JSON string starting at s[i] and moves i past it
 bool readString(const std::string& s, std::size_t& i, std::string& out) {
     if (i >= s.size() || s[i] != '"') return false;
     out.clear();
@@ -127,7 +123,7 @@ bool readString(const std::string& s, std::size_t& i, std::string& out) {
             unsigned long cp = 0;
             if (!readHex4(s, i + 1, cp)) return false;
             i += 4;
-            // A high surrogate followed by a low one makes a single code point
+            // Two escapes in a row can make one character (a surrogate pair)
             unsigned long low = 0;
             if (cp >= 0xD800 && cp <= 0xDBFF && i + 6 < s.size() && s[i + 1] == '\\' && s[i + 2] == 'u' &&
                 readHex4(s, i + 3, low) && low >= 0xDC00 && low <= 0xDFFF) {
@@ -143,7 +139,7 @@ bool readString(const std::string& s, std::size_t& i, std::string& out) {
     return false;  // no closing quote
 }
 
-// Skips one JSON value of any kind. Strings inside objects and arrays may hold brackets
+// Skips over one JSON value of any kind
 bool skipValue(const std::string& s, std::size_t& i) {
     skipSpace(s, i);
     if (i >= s.size()) return false;
@@ -176,7 +172,7 @@ bool skipValue(const std::string& s, std::size_t& i) {
     return true;
 }
 
-// The string fields of the top-level object. False if the text isn't a JSON object
+// Reads the text fields of a JSON object. False if it isn't one
 bool readStringFields(const std::string& s, std::map<std::string, std::string>& fields) {
     std::size_t i = 0;
     skipSpace(s, i);
@@ -212,14 +208,13 @@ bool readStringFields(const std::string& s, std::map<std::string, std::string>& 
 }
 
 std::string requestUrl(const char* command, double julianDay) {
-    // A one-day span at a one-day step; EMMA reads the first row, the state at
-    // julianDay. A single time in TLIST would be simpler, but in November 2026
-    // Horizons read a TLIST Julian day as an epoch before 5879611 B.C.
+    // Ask for a one-day table and read its first row. (Asking for a single time broke in
+    // November 2026)
     char start[32], stop[32];
     std::snprintf(start, sizeof(start), "%.6f", julianDay);
     std::snprintf(stop, sizeof(stop), "%.6f", julianDay + 1.0);
 
-    // Values are wrapped in single quotes, sent as %27; '@' is %40 and a space %20
+    // %27 is a quote, %40 is @, %20 is a space
     std::string url = "https://ssd.jpl.nasa.gov/api/horizons.api?format=json";
     url += "&COMMAND=%27";
     url += command;
@@ -240,7 +235,7 @@ bool parseReply(const std::string& json, long status, std::string& output, std::
     std::map<std::string, std::string> fields;
     const bool isJson = readStringFields(json, fields);
 
-    // Horizons puts the errors it detects in "error"; a 400 reply explains itself in "message"
+    // Horizons reports errors in "error" or "message"
     if (isJson) {
         for (const char* key : {"error", "message"}) {
             const auto it = fields.find(key);
@@ -272,7 +267,7 @@ bool parseStateVector(const std::string& text, Vector3D& position, Vector3D& vel
     const std::size_t soe = text.find("$$SOE");
     const std::size_t eoe = text.find("$$EOE");
     if (soe == std::string::npos || eoe == std::string::npos || eoe < soe) {
-        // Horizons doesn't always move its error into the "error" field
+        // No table: the text is probably an error message
         error = firstMessage(text);
         return false;
     }
@@ -350,7 +345,7 @@ std::optional<SolarSnapshot> loadCache(const std::filesystem::path& file) {
 
 void saveCache(const std::filesystem::path& file, const SolarSnapshot& s) {
     std::ofstream out(file, std::ios::trunc);
-    if (!out) return;  // a missing cache only costs a download next time
+    if (!out) return;  // no cache just means downloading again next time
     out << CACHE_HEADER << '\n';
     out.precision(17);
     out << s.julianDay << '\n';

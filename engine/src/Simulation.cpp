@@ -20,6 +20,7 @@ void Simulation::load(Preset preset, const SolarSnapshot* snapshot) {
     world.hasCalendar = scenario.hasCalendar;
     dt = baseDt = scenario.step;
     viewRadiusAU = scenario.viewRadius;
+    lookAlong = scenario.lookDirection;
     timeScaleHint = scenario.timeScale;
     currentPreset = preset;
     flashes.clear();
@@ -38,22 +39,32 @@ void Simulation::clear() {
 }
 
 void Simulation::addBody(double mass, const Vector3D& position, const Vector3D& velocity) {
-    world.bodies.emplace_back(mass, position, velocity);
-    integrator->bodiesChanged();  // Verlet needs the new body's acceleration before its first drift
-    checkIntegrator();            // one past DIRECT_LIMIT: Verlet takes over from IAS15
+    addBody(Body(mass, position, velocity));
+}
+
+void Simulation::addBody(const Body& body) {
+    world.bodies.push_back(body);
+    world.bodies.back().previousPosition = body.position;  // collision checks start from here
+    integrator->bodiesChanged();  // the integrator needs the new body's pull
+    checkIntegrator();            // too many bodies for IAS15? switch to Verlet
     ++world.changes;
 }
 
+void Simulation::setRelativity(double factor) {
+    if (factor == gravity.relativity) return;
+    gravity.relativity = factor;
+    integrator->bodiesChanged();  // the forces changed, so work them out again
+}
+
 void Simulation::setIntegrator(std::unique_ptr<Integrator> next) {
-    if (!next) return;            // keep the current one rather than run with none
+    if (!next) return;            // keep the current one
     integrator = std::move(next);
     integrator->bodiesChanged();
     checkIntegrator();
 }
 
 void Simulation::checkIntegrator() {
-    // Above DIRECT_LIMIT bodies the forces come from the Barnes-Hut tree. An integrator
-    // built for exact forces would cut its pieces very short there, so Verlet takes over
+    // IAS15 can't handle the tree's approximate forces, so above DIRECT_LIMIT bodies use Verlet
     if (world.bodies.size() > DIRECT_LIMIT && integrator->needsExactForces()) {
         integrator = std::make_unique<VerletIntegrator>();
         integrator->bodiesChanged();
@@ -69,10 +80,10 @@ void Simulation::limitStep(double maxDays) {
 void Simulation::step() {
     lastSubsteps = integrator->step(world, gravity, dt, [this] {
         if (resolveCollisions(world.bodies, flashes)) {
-            integrator->forgetHistory();  // indices shifted, the last piece's accelerations no longer line up
+            integrator->forgetHistory();  // bodies were removed, so stored data no longer lines up
             ++world.changes;
         }
-        world.recordTrails();  // after every piece, so trails stay smooth through a close pass
+        world.recordTrails();  // after every piece, so trails stay smooth
     });
 }
 
@@ -102,7 +113,8 @@ int Simulation::strongestPull(const Vector3D& p, int exclude) const {
 }
 
 int Simulation::dominantBody(const Vector3D& p, int exclude) const {
-    // Laplace sphere of influence r = d (m / M)^(2/5), with M the body pulling hardest on m
+    // Each body rules a small region around it (its sphere of influence). Pick the smallest
+    // region that contains p, or else the body that pulls hardest
     const std::vector<Body>& bodies = world.bodies;
     int best = -1;
     double bestRadius = std::numeric_limits<double>::infinity();
@@ -112,7 +124,7 @@ int Simulation::dominantBody(const Vector3D& p, int exclude) const {
         const int parent = strongestPull(b.position, static_cast<int>(i));
         if (parent < 0) continue;
         const Body& host = bodies[static_cast<std::size_t>(parent)];
-        if (b.mass > 0.1 * host.mass) continue;  // similar masses: a binary companion, not a satellite
+        if (b.mass > 0.1 * host.mass) continue;  // similar masses: a pair of equals, not a moon
         const double soi = (b.position - host.position).magnitude() * std::pow(b.mass / host.mass, 0.4);
         if (soi < bestRadius && (p - b.position).magnitude() < soi) {
             best = static_cast<int>(i);
@@ -130,21 +142,20 @@ Vector3D Simulation::circularVelocity(const Vector3D& p) const {
     const double dist = r.magnitude();
     if (dist <= 0.0) return host.velocity;
     const double speed = std::sqrt(units::G * host.mass / dist);
-    // counterclockwise seen from above, the way the planets go
+    // counterclockwise seen from above, like the planets
     Vector3D direction = Vector3D(0.0, 0.0, 1.0).cross(r);
     if (direction.lengthSquared() <= 0.0) direction = Vector3D(1.0, 0.0, 0.0).cross(r);
     return host.velocity + direction.normalized() * speed;
 }
 
 std::vector<Vector3D> Simulation::predictPath(const Vector3D& p, const Vector3D& v) const {
-    constexpr int STEPS = 1500;           // steps over the horizon when nothing is close
-    constexpr int MAX_ITERATIONS = 8000;  // cap when close passes shorten the steps
+    constexpr int STEPS = 1500;           // steps along the path when nothing is close
+    constexpr int MAX_ITERATIONS = 8000;  // most steps, when close passes make them short
     constexpr std::size_t MAX_ATTRACTORS = 16;
     const std::vector<Body>& bodies = world.bodies;
     if (bodies.empty()) return {p, p + v * units::DAYS_PER_YEAR};
 
-    // The heaviest bodies carry nearly all the gravity. Integrate them together
-    // with a massless test particle, so the planets move during the prediction.
+    // Move the heaviest bodies along with the new one, so the planets move during the preview
     std::vector<std::size_t> order(bodies.size());
     std::iota(order.begin(), order.end(), std::size_t{0});
     const std::size_t k = std::min(MAX_ATTRACTORS, order.size());
@@ -154,9 +165,9 @@ std::vector<Vector3D> Simulation::predictPath(const Vector3D& p, const Vector3D&
     const int hostIndex = dominantBody(p);
     if (hostIndex >= 0 &&
         std::find(order.begin(), order.end(), static_cast<std::size_t>(hostIndex)) == order.end())
-        order.back() = static_cast<std::size_t>(hostIndex);  // keep the local host, even if light
+        order.back() = static_cast<std::size_t>(hostIndex);  // always include the body it orbits
 
-    // Horizon: one orbit if bound to the host, otherwise long enough to leave
+    // How far ahead to look: one orbit if it's bound, otherwise long enough to leave
     double horizon = units::DAYS_PER_YEAR;
     if (hostIndex >= 0) {
         const Body& host = bodies[static_cast<std::size_t>(hostIndex)];
@@ -175,6 +186,7 @@ std::vector<Vector3D> Simulation::predictPath(const Vector3D& p, const Vector3D&
     const double hBase = horizon / STEPS;
     const double hMin = hBase / 1024.0;
     const double eps2 = SOFTENING * SOFTENING;
+    const double gr = gravity.relativity * Gravity::RELATIVITY_PULL;  // same forces as the real bodies
 
     std::vector<Vector3D> pos(k), vel(k), acc(k), oldAcc(k);
     std::vector<double> mass(k), radius(k);
@@ -194,13 +206,13 @@ std::vector<Vector3D> Simulation::predictPath(const Vector3D& p, const Vector3D&
             for (std::size_t j = i + 1; j < k; ++j) {
                 const Vector3D d = pos[j] - pos[i];
                 const double r2 = d.lengthSquared() + eps2;
-                const double s = units::G / (r2 * std::sqrt(r2));
+                const double s = units::G / (r2 * std::sqrt(r2)) + gr * (mass[i] + mass[j]) / (r2 * r2);
                 acc[i] += d * (s * mass[j]);
                 acc[j] -= d * (s * mass[i]);
             }
             const Vector3D d = pos[i] - tp;
             const double r2 = d.lengthSquared() + eps2;
-            ta += d * (units::G * mass[i] / (r2 * std::sqrt(r2)));
+            ta += d * (mass[i] * (units::G / (r2 * std::sqrt(r2)) + gr * mass[i] / (r2 * r2)));
         }
     };
 
@@ -210,7 +222,7 @@ std::vector<Vector3D> Simulation::predictPath(const Vector3D& p, const Vector3D&
     computeAcc();
     double elapsed = 0.0, nextSample = 2.0 * hBase;
     for (int n = 0; n < MAX_ITERATIONS && elapsed < horizon; ++n) {
-        // Shorter steps near an attractor, by the same rule as step()
+        // Shorter steps near a heavy body
         double tMin = std::numeric_limits<double>::infinity();
         for (std::size_t i = 0; i < k; ++i) {
             const double r2 = (pos[i] - tp).lengthSquared();
@@ -233,7 +245,7 @@ std::vector<Vector3D> Simulation::predictPath(const Vector3D& p, const Vector3D&
         bool hit = false;
         for (std::size_t i = 0; i < k && !hit; ++i)
             hit = (pos[i] - tp).lengthSquared() <= radius[i] * radius[i];
-        const bool closePass = h < 0.25 * hBase && n % 4 == 0;  // extra points through a close pass
+        const bool closePass = h < 0.25 * hBase && n % 4 == 0;  // more points during a close pass
         if (hit || closePass || elapsed >= nextSample) {
             path.push_back(tp);
             nextSample = elapsed + 2.0 * hBase;
@@ -244,8 +256,7 @@ std::vector<Vector3D> Simulation::predictPath(const Vector3D& p, const Vector3D&
 }
 
 double Simulation::totalEnergy() const {
-    // Kinetic plus gravity's softened potential whose gradient is exactly the
-    // force used in the integration
+    // Energy of motion plus energy of position
     return world.kineticEnergy() + gravity.potentialEnergy(world.bodies);
 }
 

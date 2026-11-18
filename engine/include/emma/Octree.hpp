@@ -7,13 +7,13 @@ namespace emma {
 
 class Body;
 
-// Barnes-Hut octree. Nodes live in one flat array that is rebuilt every step,
-// so once the array has grown, building the tree does not touch the heap
+// Barnes-Hut tree: treats a far-away group of bodies as one point mass, to save time.
+// Its nodes live in one array that's reused every step
 class Octree {
 public:
     void build(const std::vector<Body>& bodies);
 
-    // Gravitational acceleration on bodies[self], in AU/day^2
+    // The pull on bodies[self], in AU/day^2
     Vector3D acceleration(std::size_t self, double theta, double softeningSq) const;
 
 private:
@@ -32,7 +32,7 @@ private:
 
     std::vector<Node> nodes;
     const std::vector<Body>* source = nullptr;
-    mutable std::vector<int> stack;  // traversal scratch space
+    mutable std::vector<int> stack;  // scratch space for walking the tree
 };
 
 } // namespace emma

@@ -14,12 +14,8 @@ int VerletIntegrator::step(World& world, Gravity& gravity, double dt, const std:
         jerkValid = false;
     }
 
-    // Split the step when bodies come close: each piece is at most ETA times the
-    // tightest dynamical time, so a near miss is followed through its closest
-    // approach. One long step through a near miss overshoots the closest point and
-    // the pair flies apart faster than it came in, which looks like repulsion and
-    // breaks energy conservation. In quiet stretches the whole step is a single
-    // piece, so Verlet stays symplectic.
+    // When bodies get close, split the step into short pieces so the close pass is followed
+    // properly. A single long step would overshoot and fling the pair apart
     const double minPiece = dt / MAX_SUBSTEPS;
     double remaining = dt;
     int pieces = 0;
@@ -36,8 +32,8 @@ int VerletIntegrator::step(World& world, Gravity& gravity, double dt, const std:
 }
 
 void VerletIntegrator::piece(World& world, Gravity& gravity, double h) {
-    // Velocity Verlet: drift with the stored acceleration, recompute, then kick
-    // with the average of the old and new accelerations
+    // Move the bodies, work out the new pull, then update the speeds with the average of
+    // the old and new pull
     std::vector<Body>& bodies = world.bodies;
     const double halfHSq = 0.5 * h * h;
     oldAcceleration.resize(bodies.size());
@@ -60,7 +56,7 @@ double VerletIntegrator::dynamicalTime(const std::vector<Body>& bodies) const {
     double t = std::numeric_limits<double>::infinity();
     const std::size_t n = bodies.size();
 
-    // Use how fast each body's acceleration changed over the last piece |a| / |da/dt|
+    // Many bodies: guess from how fast each body's pull changed over the last piece
     if (n > Gravity::DIRECT_LIMIT && jerkValid && oldAcceleration.size() == n) {
         for (std::size_t i = 0; i < n; ++i) {
             const double change = (bodies[i].acceleration - oldAcceleration[i]).magnitude();
@@ -69,11 +65,8 @@ double VerletIntegrator::dynamicalTime(const std::vector<Body>& bodies) const {
         return t;
     }
 
-    // For each pair, the shorter of its dynamical time sqrt(r^3 / G(m1 + m2))
-    // and the time it takes to close the gap at the current relative speed.
-    // Above DIRECT_LIMIT this runs only when there is no last piece to learn from:
-    // after a load, a new body or a merge. A merge means bodies were just touching,
-    // which is exactly when the step needs splitting, so it can't run unchecked
+    // Otherwise check every pair: how quickly they can swing around each other, and how
+    // soon they'd meet at their current speed
     for (std::size_t i = 0; i < n; ++i) {
         for (std::size_t j = i + 1; j < n; ++j) {
             const double r2 = (bodies[j].position - bodies[i].position).lengthSquared();

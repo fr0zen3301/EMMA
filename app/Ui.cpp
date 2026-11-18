@@ -6,11 +6,13 @@
 #include "imgui.h"
 #include "imgui-SFML.h"
 #include <algorithm>
+#include <cfloat>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
+#include <initializer_list>
 #include <iostream>
 #include <system_error>
-#include <cstring>
 
 using namespace emma;
 
@@ -20,6 +22,7 @@ const ImVec4 ACCENT(0.851f, 0.812f, 1.0f, 1.0f);
 const ImVec4 MUTED(0.55f, 0.56f, 0.60f, 1.0f);
 const ImVec4 GOOD(0.56f, 0.89f, 0.69f, 1.0f);
 const ImVec4 WARN(1.0f, 0.75f, 0.42f, 1.0f);
+const ImVec4 SELECTED(0.184f, 0.169f, 0.271f, 1.0f);  // the lit part of a switch
 constexpr float LABEL_WIDTH = 84.f;
 constexpr float VALUE_COLUMN = 150.f;
 
@@ -36,18 +39,18 @@ std::string number(double v) {
     return printf_string("%.2e", v);
 }
 
-// Past this many AU, distances read better in parsecs: about half a parsec
+// Above this many AU, show distances in parsecs
 constexpr double PARSEC_FROM_AU = 1e5;
 constexpr double AU_PER_KPC = 1e3 * units::AU_PER_PARSEC;
 
-// A distance in light-years, to go alongside parsecs
+// A distance in light-years
 std::string lightYears(double au) {
     const double ly = au / units::AU_PER_LIGHT_YEAR;
     if (ly < 10.0) return printf_string("%.1f ly", ly);
     return printf_string("%.0f ly", ly);
 }
 
-// A left-hand label, with the widget that follows lined up in a column
+// A label on the left, with its control lined up next to it
 void rowLabel(const char* text) {
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted(text);
@@ -60,6 +63,63 @@ void hint(const char* text) {
     ImGui::PopStyleColor();
 }
 
+// Says in words how slow a clock runs at the middle of the view, for the bent grid
+std::string clockLine(double lag) {
+    if (lag >= 1.0) return "A clock here has stopped: this is at or inside a horizon. Not to scale.";
+    const double seconds = lag * units::DAYS_PER_YEAR * units::SECONDS_PER_DAY;  // lost in a year
+    const std::string amount = lag >= 1e-3 ? printf_string("%.1f%%", 100.0 * lag) : printf_string("%.1e", lag);
+    std::string yearly;
+    if (seconds >= units::SECONDS_PER_DAY) yearly = printf_string("%.1f days", seconds / units::SECONDS_PER_DAY);
+    else if (seconds >= 1.0) yearly = printf_string("%.2f s", seconds);
+    else if (seconds >= 1e-3) yearly = printf_string("%.2f ms", seconds * 1e3);
+    else yearly = printf_string("%.2f microseconds", seconds * 1e6);
+    return "A clock here runs " + amount + " slow: " + yearly + " a year. Not to scale.";
+}
+
+// A tooltip for the last control
+void tip(const char* text) {
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", text);
+}
+
+// A row of buttons that work as one choice, filling the rest of the line. Returns true
+// when the choice changes
+bool segmented(const char* id, int& value, std::initializer_list<const char*> labels,
+               std::initializer_list<const char*> tips) {
+    const float gap = 2.f;
+    const float count = static_cast<float>(labels.size());
+    const float w = (ImGui::GetContentRegionAvail().x - gap * (count - 1.f)) / count;
+    bool changed = false;
+    ImGui::PushID(id);
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(gap, ImGui::GetStyle().ItemSpacing.y));
+    const char* const* text = tips.begin();
+    int i = 0;
+    for (const char* label : labels) {
+        const bool on = i == value;
+        ImGui::PushStyleColor(ImGuiCol_Button, on ? SELECTED : ImGui::GetStyleColorVec4(ImGuiCol_FrameBg));
+        ImGui::PushStyleColor(ImGuiCol_Text, on ? ACCENT : MUTED);
+        if (ImGui::Button(label, ImVec2(w, 0.f)) && !on) {
+            value = i;
+            changed = true;
+        }
+        ImGui::PopStyleColor(2);
+        if (text != tips.end()) tip(*text++);
+        if (++i < static_cast<int>(labels.size())) ImGui::SameLine();
+    }
+    ImGui::PopStyleVar();
+    ImGui::PopID();
+    return changed;
+}
+
+// A button that stays lit while it's on. Returns true when clicked
+bool toggleChip(const char* label, bool& on, float width) {
+    ImGui::PushStyleColor(ImGuiCol_Button, on ? SELECTED : ImGui::GetStyleColorVec4(ImGuiCol_FrameBg));
+    ImGui::PushStyleColor(ImGuiCol_Text, on ? ACCENT : MUTED);
+    const bool clicked = ImGui::Button(label, ImVec2(width, 0.f));
+    ImGui::PopStyleColor(2);
+    if (clicked) on = !on;
+    return clicked;
+}
+
 ImVec4 driftColor(double drift) {
     const double a = std::abs(drift);
     if (a < 1e-6) return GOOD;
@@ -67,7 +127,7 @@ ImVec4 driftColor(double drift) {
     return WARN;
 }
 
-// A round dial for the launch direction. Angle in radians, counterclockwise from +x
+// A round dial for picking the launch direction (angle in radians)
 bool angleDial(const char* id, float& angle, float radius) {
     const ImVec2 origin = ImGui::GetCursorScreenPos();
     ImGui::InvisibleButton(id, ImVec2(radius * 2.f, radius * 2.f));
@@ -126,6 +186,10 @@ void applyTheme() {
     c[ImGuiCol_SliderGrabActive] = ImVec4(1.f, 1.f, 1.f, 1.f);
     c[ImGuiCol_CheckMark] = ACCENT;
     c[ImGuiCol_PlotLines] = ACCENT;
+    c[ImGuiCol_Tab] = ImVec4(0.067f, 0.071f, 0.102f, 1.f);
+    c[ImGuiCol_TabHovered] = ImVec4(0.15f, 0.15f, 0.21f, 1.f);
+    c[ImGuiCol_TabSelected] = SELECTED;
+    c[ImGuiCol_TabSelectedOverline] = ACCENT;
 }
 
 void loadFont(const std::filesystem::path& exeDir) {
@@ -149,8 +213,206 @@ void loadFont(const std::filesystem::path& exeDir) {
     std::cerr << "EMMA: fonts/font.otf not found, using ImGui's built-in font\n";
 }
 
+namespace {
+
+// The Add tab: what the next click puts in space
+void addTab(UiState& st) {
+    const ImGuiStyle& style = ImGui::GetStyle();
+    int kind = st.spawnHole ? 1 : 0;
+    if (segmented("##kind", kind, {"Planet or star", "Black hole"},
+                  {"A planet, moon or star", "No surface: swallows whatever touches it"}))
+        st.spawnHole = kind == 1;
+
+    const double mass = std::pow(10.0, static_cast<double>(st.spawnHole ? st.holeMassExponent : st.massExponent));
+    rowLabel("Mass");
+    ImGui::SetNextItemWidth(-1.f);
+    if (st.spawnHole)
+        ImGui::SliderFloat("##holemass", &st.holeMassExponent, 0.f, 10.f, formatMass(mass).c_str());
+    else
+        ImGui::SliderFloat("##mass", &st.massExponent, -10.f, 2.f, formatMass(mass).c_str());
+
+    // Preview of the body a click would add: its color and kind
+    ImGui::SetCursorPosX(style.WindowPadding.x + LABEL_WIDTH);
+    const Rgb c = st.spawnHole ? Body::HOLE_COLOR : Body::colorForMass(mass);
+    const ImVec2 at = ImGui::GetCursorScreenPos();
+    const float lineHeight = ImGui::GetTextLineHeight();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 dot(at.x + 6.f, at.y + lineHeight * 0.5f);
+    dl->AddCircleFilled(dot, 5.f, IM_COL32(c.r, c.g, c.b, 255));
+    if (st.spawnHole) dl->AddCircleFilled(dot, 3.f, IM_COL32(0, 0, 0, 255));  // the shadow in its ring
+    ImGui::Dummy(ImVec2(16.f, lineHeight));
+    ImGui::SameLine();
+    ImGui::TextDisabled("%s", (st.spawnHole ? Body::describeBlackHole(mass) : Body::describe(mass)).c_str());
+
+    if (st.spawnHole) {
+        rowLabel("Spin");
+        ImGui::SetNextItemWidth(-1.f);
+        ImGui::SliderFloat("##holespin", &st.holeSpin, 0.f, static_cast<float>(blackhole::MAX_SPIN), "%.3f");
+        tip("0 is no spin, 0.998 is the fastest. Spin shrinks the horizon");
+    }
+
+    ImGui::Spacing();
+    int launch = st.autoOrbit ? 0 : 1;
+    if (segmented("##launch", launch, {"Circular orbit", "Custom"},
+                  {"Orbit whatever is nearest", "Set the speed and direction yourself"}))
+        st.autoOrbit = launch == 0;
+    if (!st.autoOrbit) {
+        rowLabel("Speed");
+        ImGui::SetNextItemWidth(-1.f);
+        ImGui::SliderFloat("##speed", &st.speedKms, 0.f, 200.f, "%.1f km/s");
+        tip("Relative to whatever is nearest");
+        rowLabel("Direction");
+        angleDial("##direction", st.angle, 17.f);
+        ImGui::SameLine();
+        ImGui::Text("%.0f deg", static_cast<double>(st.angle) * 180.0 / units::PI);
+    }
+    ImGui::Checkbox("Show path preview", &st.showPath);
+    tip("A dashed line showing where it will go");
+    hint("Click to place. Drag to throw.");
+}
+
+// The View tab: the camera and what's drawn
+void viewTab(UiState& st, const Stats& stats, Preset preset, const std::vector<Body>& bodies) {
+    const ImGuiStyle& style = ImGui::GetStyle();
+    rowLabel("Follow");
+    ImGui::SetNextItemWidth(-1.f);
+    if (ImGui::BeginCombo("##follow", st.follow.empty() ? "Nothing" : st.follow.c_str())) {
+        if (ImGui::Selectable("Nothing", st.follow.empty())) st.follow.clear();
+        for (const Body& b : bodies) {
+            if (b.isNamed() && ImGui::Selectable(b.name.c_str(), st.follow == b.name)) st.follow = b.name;
+        }
+        if (preset == Preset::SolarSystem && ImGui::Selectable(SGR_A, st.follow == SGR_A)) st.follow = SGR_A;
+        ImGui::EndCombo();
+    }
+    tip("Keep a body in the middle of the view");
+
+    const float half = 0.5f * (ImGui::GetContentRegionAvail().x - style.ItemSpacing.x);
+    if (ImGui::Button("Fit view (F)", ImVec2(half, 0.f))) st.resetViewRequested = true;
+    tip("Fit the whole system in view");
+    ImGui::SameLine();
+    if (ImGui::Button("Top view (T)", ImVec2(half, 0.f))) st.topViewRequested = true;
+    tip("Look straight down");
+
+    rowLabel("Show");
+    const float third = (ImGui::GetContentRegionAvail().x - 2.f * style.ItemSpacing.x) / 3.f;
+    toggleChip("Trails", st.showTrails, third);
+    tip("The paths bodies have taken");
+    ImGui::SameLine();
+    toggleChip("Labels", st.showLabels, third);
+    tip("Names next to bodies");
+    ImGui::SameLine();
+    toggleChip("Grid", st.showGrid, third);
+    tip("The plane new bodies are placed on");
+
+    if (ImGui::Checkbox("Bend the grid", &st.bendGrid) && st.bendGrid) st.showGrid = true;
+    tip("The grid dips where clocks run slower");
+    if (st.bendGrid) {
+        ImGui::Indent();
+        rowLabel("Depth");
+        ImGui::SetNextItemWidth(-1.f);
+        // ImGui reads the label as a format, so the % is doubled, and it mustn't round through it
+        const std::string deep = printf_string("%.0f%%%%", 100.0 * static_cast<double>(st.gridDepth));
+        ImGui::SliderFloat("##griddepth", &st.gridDepth, 0.05f, 0.5f, deep.c_str(), ImGuiSliderFlags_NoRoundToFormat);
+        tip("How deep the dips are drawn, as a share of the view");
+        if (stats.clockSlowdown >= 0.0) hint(clockLine(stats.clockSlowdown).c_str());
+        ImGui::Unindent();
+    }
+
+    if (preset == Preset::SolarSystem) {
+        ImGui::Checkbox("Galaxy view", &st.galaxyView);
+        tip("Show the solar system moving through the Galaxy");
+        if (st.galaxyView) {
+            const float real = static_cast<float>(galaxy::sunVelocityKms().magnitude());
+            ImGui::Indent();
+            rowLabel("Speed");
+            ImGui::SetNextItemWidth(-56.f);
+            ImGui::SliderFloat("##sunspeed", &st.sunSpeedKms, 0.f, 300.f, "%.0f km/s");
+            ImGui::SameLine();
+            if (ImGui::Button("Real")) st.sunSpeedKms = real;
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("The Sun's real speed, %.0f km/s", static_cast<double>(real));
+            hint(printf_string("The Sun has moved %s.", formatDistance(stats.sunTravelled).c_str()).c_str());
+            ImGui::Unindent();
+        }
+    }
+}
+
+// The Physics tab: how bodies move, and how accurately
+void physicsTab(UiState& st, const Stats& stats, const char* integratorName) {
+    const ImGuiStyle& style = ImGui::GetStyle();
+    int integrator = std::strcmp(integratorName, "IAS15") == 0 ? 1 : 0;
+    rowLabel("Integrator");
+    if (segmented("##integrator", integrator, {"Verlet", "IAS15"},
+                  {"Fast, with a small energy wobble", "Most accurate, but slower"}))
+        st.integratorRequested = integrator;
+    if (stats.bodies > Simulation::DIRECT_LIMIT)
+        hint(printf_string("With more than %zu bodies, Verlet is used.", Simulation::DIRECT_LIMIT).c_str());
+    else
+        hint(integrator == 0 ? "Fast, with a small energy wobble." : "Most accurate, but slower.");
+
+    ImGui::Checkbox("General relativity", &st.relativity);
+    tip("Einstein's gravity: orbits slowly turn each lap");
+    if (st.relativity) {
+        ImGui::Indent();
+        rowLabel("Exaggerate");
+        ImGui::SetNextItemWidth(-1.f);
+        const std::string boost = printf_string("%.0fx", static_cast<double>(st.relativityScale));
+        ImGui::SliderFloat("##relativity", &st.relativityScale, 1.f, 100.f, boost.c_str(),
+                           ImGuiSliderFlags_Logarithmic);
+        tip("1x is real. Raise it to see orbits turn");
+        ImGui::Unindent();
+    }
+
+    // How well energy and angular momentum are kept
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+    const float column = style.WindowPadding.x + VALUE_COLUMN;
+    ImGui::TextUnformatted("Energy drift");
+    ImGui::SameLine(column);
+    ImGui::TextColored(driftColor(stats.energyDrift), "%+.1e", stats.energyDrift);
+    ImGui::TextUnformatted("Momentum drift");
+    ImGui::SameLine(column);
+    ImGui::TextColored(driftColor(stats.momentumDrift), "%+.1e", stats.momentumDrift);
+    if (stats.driftHistory && !stats.driftHistory->empty()) {
+        float scale = 1e-12f;
+        for (float v : *stats.driftHistory) scale = std::max(scale, std::abs(v));
+        ImGui::PlotLines("##drift", stats.driftHistory->data(), static_cast<int>(stats.driftHistory->size()), 0,
+                         nullptr, -1.2f * scale, 1.2f * scale, ImVec2(-1.f, 42.f));
+    }
+    ImGui::TextDisabled("%zu bodies", stats.bodies);
+    ImGui::SameLine(column);
+    ImGui::TextDisabled("%.0f FPS", static_cast<double>(stats.fps));
+    hint("Drift since bodies were last added or merged.");
+}
+
+// The Black holes tab: how they look up close
+void blackHoleTab(UiState& st, Preset preset, const char* holeName) {
+    const ImGuiStyle& style = ImGui::GetStyle();
+    if (holeName) {
+        const std::string go = std::string("Go to ") + holeName;
+        if (ImGui::Button(go.c_str(), ImVec2(-FLT_MIN, 0.f))) st.goToHoleRequested = true;
+        tip(preset == Preset::SolarSystem ? "Jump 8.15 kpc to the Galactic center and look at the hole"
+                                          : "Jump to it and look at the hole");
+    }
+    segmented("##look", st.holeLook, {"Real gas", "Thin disk", "No disk"},
+              {"The dim hot gas Sgr A* really has", "A textbook disk. Sgr A* doesn't have one",
+               "Only the stars, bent around the hole"});
+    ImGui::Checkbox("Bend light", &st.holeBendLight);
+    tip("Turn off to see the view without gravity");
+    ImGui::SameLine(style.WindowPadding.x + LABEL_WIDTH + 20.f);
+    ImGui::Checkbox("Doppler", &st.holeDoppler);
+    tip("Gas moving toward you looks brighter and bluer");
+    rowLabel("Brightness");
+    ImGui::SetNextItemWidth(-1.f);
+    const std::string exposure = printf_string("%.1fx", std::pow(2.0, static_cast<double>(st.holeBrightness)));
+    ImGui::SliderFloat("##holebrightness", &st.holeBrightness, -2.f, 2.f, exposure.c_str());
+    hint("Up close, the biggest-looking hole is ray traced.");
+}
+
+} // namespace
+
 void drawSidebar(UiState& st, emma::Clock& clock, const Stats& stats, Preset preset, const std::vector<Body>& bodies,
-                 const char* integratorName, float width, float height) {
+                 const char* integratorName, bool anyHole, const char* holeName, float width, float height) {
     ImGui::SetNextWindowPos(ImVec2(0.f, 0.f));
     ImGui::SetNextWindowSize(ImVec2(width, height));
     const ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
@@ -159,195 +421,87 @@ void drawSidebar(UiState& st, emma::Clock& clock, const Stats& stats, Preset pre
     ImGui::Begin("EMMA##sidebar", nullptr, flags);
     const ImGuiStyle& style = ImGui::GetStyle();
 
-    // Header: the name on the left, run controls on the right
+    // The name, and the shortcuts behind a ? button
     ImGui::AlignTextToFramePadding();
     ImGui::TextColored(ACCENT, "EMMA");
-    ImGui::SameLine(width - style.WindowPadding.x - 116.f);
-    if (ImGui::Button(clock.paused ? "Run###run" : "Pause###run", ImVec2(62.f, 0.f))) clock.paused = !clock.paused;
+    ImGui::SameLine(width - style.WindowPadding.x - 28.f);
+    if (ImGui::Button("?", ImVec2(28.f, 0.f))) ImGui::OpenPopup("##shortcuts");
+    tip("Keyboard and mouse shortcuts");
+    if (ImGui::BeginPopup("##shortcuts")) {
+        ImGui::TextUnformatted("Scroll: zoom. Double-click a body: follow it.");
+        ImGui::TextUnformatted("Right-drag: turn. Shift+right-drag or middle-drag: pan.");
+        ImGui::TextUnformatted("F: fit view. T: top view.");
+        ImGui::TextUnformatted("Space: pause. N: step. Esc: cancel a launch.");
+        ImGui::EndPopup();
+    }
+
+    // Time: run, step, real time and speed
+    if (ImGui::Button(clock.paused ? "Run###run" : "Pause###run", ImVec2(70.f, 0.f))) clock.paused = !clock.paused;
+    tip("Space");
     ImGui::SameLine();
-    if (ImGui::Button("Step", ImVec2(46.f, 0.f))) clock.requestStep();
+    if (ImGui::Button("Step", ImVec2(56.f, 0.f))) clock.requestStep();
+    tip("One step (N)");
+    if (preset == Preset::SolarSystem) {
+        ImGui::SameLine();
+        if (toggleChip("Real time", clock.live, -FLT_MIN) && clock.live) clock.paused = false;
+        tip("Run at one second per second, matching your clock");
+    }
+    ImGui::SetNextItemWidth(-1.f);
+    const std::string rate = clock.live ? std::string("Real time") : formatRate(clock.timeScale);
+    float scale = static_cast<float>(clock.timeScale);
+    if (ImGui::SliderFloat("##timescale", &scale, 0.1f, 3650.f, rate.c_str(), ImGuiSliderFlags_Logarithmic)) {
+        clock.timeScale = static_cast<double>(scale);
+        clock.live = false;  // picking a speed leaves real time
+    }
+    tip("How fast time runs");
+    if (stats.behind) ImGui::TextColored(WARN, "Running behind: try a lower speed");
+    if (clock.live && stats.aheadDays > 1.0 / units::SECONDS_PER_DAY) {
+        ImGui::PushStyleColor(ImGuiCol_Text, WARN);
+        ImGui::TextWrapped("%s ahead of now, so real time is waiting. Reset goes back to today.",
+                           formatDuration(stats.aheadDays).c_str());
+        ImGui::PopStyleColor();
+    }
+
+    // The system, with Reset beside it
+    static const char* const names[] = {"Solar system", "Alpha Centauri", "Sgr A* and the S-stars", "Empty space"};
+    constexpr float RESET_WIDTH = 56.f;
+    int current = static_cast<int>(preset);
+    ImGui::SetNextItemWidth(-(RESET_WIDTH + style.ItemSpacing.x));
+    if (ImGui::Combo("##preset", &current, names, IM_ARRAYSIZE(names)) && current != static_cast<int>(preset))
+        st.presetRequested = current;
+    tip("Pick a system");
+    ImGui::SameLine();
+    if (ImGui::Button("Reset", ImVec2(RESET_WIDTH, 0.f))) st.resetRequested = true;
+    tip("Start this system again");
+    switch (preset) {
+    case Preset::SolarSystem:
+        hint(stats.sourceNote.c_str());
+        if (stats.canRetry && ImGui::Button("Try again")) st.retryFetchRequested = true;
+        break;
+    case Preset::AlphaCentauri: hint("Two Sun-like stars on an 80-year orbit."); break;
+    case Preset::GalacticCenter: hint("Four stars around the Milky Way's black hole, from 2017."); break;
+    case Preset::Empty: hint("Nothing yet. Click to add bodies."); break;
+    }
     ImGui::Spacing();
 
-    if (ImGui::CollapsingHeader("Simulation", ImGuiTreeNodeFlags_DefaultOpen)) {
-        rowLabel("Time");
-        ImGui::SetNextItemWidth(-1.f);
-        const std::string rate = clock.live ? std::string("Real time") : formatRate(clock.timeScale);
-        float scale = static_cast<float>(clock.timeScale);
-        if (ImGui::SliderFloat("##timescale", &scale, 0.1f, 3650.f, rate.c_str(), ImGuiSliderFlags_Logarithmic)) {
-            clock.timeScale = static_cast<double>(scale);
-            clock.live = false;  // picking a speed leaves real time
+    if (ImGui::BeginTabBar("##tabs")) {
+        if (ImGui::BeginTabItem("Add")) {
+            addTab(st);
+            ImGui::EndTabItem();
         }
-        if (preset == Preset::SolarSystem) {
-            if (ImGui::Checkbox("Real time", &clock.live) && clock.live) clock.paused = false;
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("One second per second, in step with your clock: the planets where they are right now");
+        if (ImGui::BeginTabItem("View")) {
+            viewTab(st, stats, preset, bodies);
+            ImGui::EndTabItem();
         }
-        // Which integrator moves the bodies
-        static const char* const integrators[] = {"Velocity Verlet", "IAS15"};
-        int currentIntegrator = 0;
-        for (int i = 0; i < IM_ARRAYSIZE(integrators); ++i) {
-            if (std::strcmp(integratorName, integrators[i]) == 0) currentIntegrator = i;
+        if (ImGui::BeginTabItem("Physics")) {
+            physicsTab(st, stats, integratorName);
+            ImGui::EndTabItem();
         }
-        rowLabel("Integrator");
-        ImGui::SetNextItemWidth(-1.f);
-        if (ImGui::Combo("##integrator", &currentIntegrator, integrators, IM_ARRAYSIZE(integrators)))
-            st.integratorRequested = currentIntegrator;
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Velocity Verlet: fast, with a small energy wobble.\n"
-                              "IAS15: as accurate as a double allows but slower, for up to %zu bodies.",
-                              Simulation::DIRECT_LIMIT);
-        if (stats.bodies > Simulation::DIRECT_LIMIT)
-            hint(printf_string("Above %zu bodies EMMA uses Verlet: IAS15 is built for exact forces.",
-                               Simulation::DIRECT_LIMIT).c_str());
-        if (ImGui::Button("Clear")) st.clearRequested = true;
-        ImGui::SameLine();
-        if (ImGui::Button("Reset")) st.resetRequested = true;
-        ImGui::SameLine();
-        if (ImGui::Button("Fit view")) st.resetViewRequested = true;
-        if (stats.behind) ImGui::TextColored(WARN, "Running behind, try a lower speed");
-    }
-
-    if (ImGui::CollapsingHeader("System", ImGuiTreeNodeFlags_DefaultOpen)) {
-        static const char* const names[] = {"Solar system", "Alpha Centauri", "Empty space"};
-        const int current = static_cast<int>(preset);
-        for (int i = 0; i < 3; ++i) {
-            if (ImGui::RadioButton(names[i], current == i)) st.presetRequested = i;
+        if (anyHole && ImGui::BeginTabItem("Black holes")) {
+            blackHoleTab(st, preset, holeName);
+            ImGui::EndTabItem();
         }
-        switch (preset) {
-        case Preset::SolarSystem:
-            hint(stats.sourceNote.c_str());
-            if (stats.canRetry && ImGui::Button("Try again")) st.retryFetchRequested = true;
-            break;
-        case Preset::AlphaCentauri:
-            hint("Two Sun-like stars on their 80-year orbit, starting at closest approach.");
-            break;
-        case Preset::Empty: hint("Nothing yet. Click to add bodies."); break;
-        }
-    }
-
-    if (ImGui::CollapsingHeader("New body", ImGuiTreeNodeFlags_DefaultOpen)) {
-        const double mass = std::pow(10.0, static_cast<double>(st.massExponent));
-        rowLabel("Mass");
-        ImGui::SetNextItemWidth(-1.f);
-        ImGui::SliderFloat("##mass", &st.massExponent, -10.f, 2.f, formatMass(mass).c_str());
-
-        // Swatch and class of the body a click would create
-        ImGui::SetCursorPosX(style.WindowPadding.x + LABEL_WIDTH);
-        const Rgb c = Body::colorForMass(mass);
-        const ImVec2 at = ImGui::GetCursorScreenPos();
-        const float lineHeight = ImGui::GetTextLineHeight();
-        ImGui::GetWindowDrawList()->AddCircleFilled(ImVec2(at.x + 6.f, at.y + lineHeight * 0.5f), 5.f,
-                                                    IM_COL32(c.r, c.g, c.b, 255));
-        ImGui::Dummy(ImVec2(16.f, lineHeight));
-        ImGui::SameLine();
-        ImGui::TextDisabled("%s", Body::describe(mass).c_str());
-
-        ImGui::BeginDisabled(st.autoOrbit);
-        rowLabel("Speed");
-        ImGui::SetNextItemWidth(-1.f);
-        ImGui::SliderFloat("##speed", &st.speedKms, 0.f, 200.f, "%.1f km/s");
-        rowLabel("Direction");
-        angleDial("##direction", st.angle, 17.f);
-        ImGui::SameLine();
-        ImGui::Text("%.0f deg", static_cast<double>(st.angle) * 180.0 / units::PI);
-        ImGui::EndDisabled();
-
-        ImGui::Checkbox("Circular orbit", &st.autoOrbit);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Launch on a circular orbit around the body that dominates gravity at that spot");
-        ImGui::Checkbox("Show predicted path", &st.showPath);
-        hint("Click empty space to place, or drag to set speed and direction. Speed is measured relative to "
-             "the body that dominates gravity at that spot.");
-    }
-
-    if (ImGui::CollapsingHeader("View", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::Checkbox("Trails", &st.showTrails);
-        ImGui::SameLine(style.WindowPadding.x + LABEL_WIDTH + 20.f);
-        ImGui::Checkbox("Labels", &st.showLabels);
-        ImGui::Checkbox("Grid", &st.showGrid);
-        ImGui::SameLine(style.WindowPadding.x + LABEL_WIDTH + 20.f);
-        if (ImGui::Button("Top view")) st.topViewRequested = true;
-        rowLabel("Follow");
-        ImGui::SetNextItemWidth(-1.f);
-        if (ImGui::BeginCombo("##follow", st.follow.empty() ? "Nothing" : st.follow.c_str())) {
-            if (ImGui::Selectable("Nothing", st.follow.empty())) st.follow.clear();
-            for (const Body& b : bodies) {
-                if (b.isNamed() && ImGui::Selectable(b.name.c_str(), st.follow == b.name)) st.follow = b.name;
-            }
-            if (preset == Preset::SolarSystem && ImGui::Selectable(SGR_A, st.follow == SGR_A)) st.follow = SGR_A;
-            ImGui::EndCombo();
-        }
-        if (preset == Preset::SolarSystem) {
-            ImGui::Checkbox("Galaxy view", &st.galaxyView);
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Turn the picture into Galactic coordinates and carry it along the Sun's path "
-                                  "around the Galaxy. The physics doesn't change");
-            if (st.galaxyView) {
-                const float real = static_cast<float>(galaxy::sunVelocityKms().magnitude());
-                rowLabel("Sun speed");
-                ImGui::SetNextItemWidth(-56.f);
-                ImGui::SliderFloat("##sunspeed", &st.sunSpeedKms, 0.f, 300.f, "%.0f km/s");
-                ImGui::SameLine();
-                if (ImGui::Button("Real")) st.sunSpeedKms = real;
-                hint(printf_string("The Sun has moved %s since the start. Its real speed is %.0f km/s.",
-                                   formatDistance(stats.sunTravelled).c_str(), static_cast<double>(real))
-                         .c_str());
-            }
-        }
-        hint("Scroll to zoom. Double-click a planet, or scroll in over it, to follow it. Right-drag turns "
-             "the view, Shift+right-drag or middle-drag pans. F fits, T looks straight down. Space pauses, "
-             "N steps, Esc cancels a launch.");
-    }
-
-    if (preset == Preset::SolarSystem && ImGui::CollapsingHeader("Sgr A*")) {
-        if (ImGui::Button("Go to Sgr A*")) st.goToHoleRequested = true;
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Jump to the black hole at the Galactic center, 8.15 kpc away, "
-                              "and look along its disk from just above it");
-        ImGui::RadioButton("Gas flow, as observed", &st.holeLook, 0);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("The thick, dim cloud of hot gas Sgr A* really has, in the EHT's false colors");
-        ImGui::RadioButton("Thin disk, an illustration", &st.holeLook, 1);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("A flat accretion disk, the textbook black hole. Sgr A* doesn't have one, "
-                              "but it shows the bending of light best");
-        ImGui::RadioButton("No disk", &st.holeLook, 2);
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Only the background stars, bent around the hole");
-        ImGui::Checkbox("Bend light", &st.holeBendLight);
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Untick to see the picture without gravity bending the light");
-        ImGui::SameLine(style.WindowPadding.x + LABEL_WIDTH + 20.f);
-        ImGui::Checkbox("Doppler", &st.holeDoppler);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Gas moving toward you looks brighter and bluer. The film Interstellar left this out");
-        rowLabel("Brightness");
-        ImGui::SetNextItemWidth(-1.f);
-        const std::string exposure = printf_string("%.1fx", std::pow(2.0, static_cast<double>(st.holeBrightness)));
-        ImGui::SliderFloat("##holebrightness", &st.holeBrightness, -2.f, 2.f, exposure.c_str());
-        hint("Up close, every pixel is ray traced: its light is followed backward through the curved space "
-             "around the hole. Farther out, Sgr A* is a marker.");
-    }
-
-    if (ImGui::CollapsingHeader("Stats", ImGuiTreeNodeFlags_DefaultOpen)) {
-        const float column = style.WindowPadding.x + VALUE_COLUMN;
-        ImGui::Text("Bodies %zu", stats.bodies);
-        ImGui::SameLine(column);
-        ImGui::Text("FPS %.0f", static_cast<double>(stats.fps));
-
-        ImGui::TextUnformatted("Energy drift");
-        ImGui::SameLine(column);
-        ImGui::TextColored(driftColor(stats.energyDrift), "%+.1e", stats.energyDrift);
-        ImGui::TextUnformatted("Momentum drift");
-        ImGui::SameLine(column);
-        ImGui::TextColored(driftColor(stats.momentumDrift), "%+.1e", stats.momentumDrift);
-
-        if (stats.driftHistory && !stats.driftHistory->empty()) {
-            float scale = 1e-12f;
-            for (float v : *stats.driftHistory) scale = std::max(scale, std::abs(v));
-            ImGui::PlotLines("##drift", stats.driftHistory->data(), static_cast<int>(stats.driftHistory->size()),
-                             0, nullptr, -1.2f * scale, 1.2f * scale, ImVec2(-1.f, 42.f));
-        }
-        hint("Relative change in total energy and angular momentum since bodies were last added, "
-             "merged or loaded.");
+        ImGui::EndTabBar();
     }
 
     ImGui::End();
@@ -368,7 +522,7 @@ void drawStatusBar(const Simulation& sim, const Camera& camera, const SceneFrame
     if (camera.viewport.contains(mouse) && !frame.galactic) {
         if (const std::optional<Vector3D> w = camera.pick(mouse)) {
             ImGui::SameLine(0.f, 28.f);
-            if (viewWidth >= PARSEC_FROM_AU) {  // in the same unit as the view's width
+            if (viewWidth >= PARSEC_FROM_AU) {  // same unit as the view width
                 const bool kpc = viewWidth >= AU_PER_KPC;
                 const double unit = kpc ? AU_PER_KPC : units::AU_PER_PARSEC;
                 ImGui::TextDisabled("Cursor %.3f, %.3f %s", w->x / unit, w->y / unit, kpc ? "kpc" : "pc");
@@ -403,12 +557,12 @@ void drawLabels(const Camera& camera, const SceneFrame& frame, const std::vector
     ImDrawList* dl = ImGui::GetBackgroundDrawList();
     const ImU32 color = ImGui::GetColorU32(ImVec4(0.78f, 0.78f, 0.84f, 0.85f));
     for (const Body& b : bodies) {
-        if (!b.isNamed()) continue;
+        if (!b.isNamed() || b.isBlackHole()) continue;  // black holes get their labels elsewhere
         const Vector3D at = frame.place(b.position);
         const std::optional<sf::Vector2f> p = camera.toScreen(at);
         if (!p || !camera.viewport.contains(*p)) continue;
 
-        // Skip the label while a heavier named body covers this one (the Moon at solar-system zoom)
+        // Skip the label if a heavier body covers this one (like the Moon when zoomed out)
         bool covered = false;
         for (const Body& o : bodies) {
             if (&o == &b || !o.isNamed() || o.mass <= b.mass) continue;
@@ -429,29 +583,37 @@ void drawLabels(const Camera& camera, const SceneFrame& frame, const std::vector
     }
 }
 
-void drawBlackHoleLabel(const Camera& camera, sf::Vector2f at, float radius) {
-    if (!camera.viewport.contains(at)) return;
-    ImGui::GetBackgroundDrawList()->AddText(ImVec2(at.x + radius + 4.f, at.y - radius - 14.f),
-                                            ImGui::GetColorU32(ImVec4(0.78f, 0.78f, 0.84f, 0.85f)), SGR_A);
+bool overBlackHole(const Renderer::BlackHoleShot& shot, sf::Vector2f mouse) {
+    if (!shot.visible) return false;
+    const float reach = std::max(shot.radius, 8.f);
+    const float dx = shot.at.x - mouse.x, dy = shot.at.y - mouse.y;
+    return dx * dx + dy * dy <= reach * reach;
 }
 
-bool drawBlackHoleTooltip(sf::Vector2f at, float radius, sf::Vector2f mouse, double sunDistance, double eyeDistance,
-                          bool rayTraced) {
-    const float reach = std::max(radius, 8.f);
-    const float dx = at.x - mouse.x, dy = at.y - mouse.y;
-    if (dx * dx + dy * dy > reach * reach) return false;
+void drawBlackHoleLabel(const Camera& camera, const Renderer::BlackHoleShot& shot) {
+    if (!shot.visible || shot.hole.name.empty() || !camera.viewport.contains(shot.at)) return;
+    ImGui::GetBackgroundDrawList()->AddText(ImVec2(shot.at.x + shot.radius + 4.f, shot.at.y - shot.radius - 14.f),
+                                            ImGui::GetColorU32(ImVec4(0.78f, 0.78f, 0.84f, 0.85f)),
+                                            shot.hole.name.c_str());
+}
 
-    const double rs = blackhole::schwarzschildRadiusAU(galaxy::SGR_A_MASS);
+void drawBlackHoleTooltip(const Renderer::BlackHoleShot& shot, const std::string& where) {
+    const Renderer::BlackHoleSight& h = shot.hole;
+    const double rs = blackhole::schwarzschildRadiusAU(h.mass);
     ImGui::BeginTooltip();
-    ImGui::TextColored(ACCENT, "%s", SGR_A);
-    ImGui::TextDisabled("Supermassive black hole");
-    ImGui::Text("Mass: %s", formatMass(galaxy::SGR_A_MASS).c_str());
-    ImGui::Text("Horizon radius: %.0f km", rs * units::KM_PER_AU);
+    ImGui::TextColored(ACCENT, "%s", h.name.empty() ? h.kind.c_str() : h.name.c_str());
+    if (!h.name.empty()) ImGui::TextDisabled("%s", h.kind.c_str());
+    ImGui::Text("Mass: %s", formatMass(h.mass).c_str());
+    ImGui::Text("Horizon radius: %.0f km", blackhole::horizonRadiusAU(h.mass, h.spin) * units::KM_PER_AU);
+    if (h.spin > 0.0)
+        ImGui::Text("Spin: %.3f", h.spin);
+    else
+        ImGui::Text("Spin: none");
     ImGui::Text("Shadow radius: %s", formatDistance(blackhole::SHADOW_RADIUS * rs).c_str());
-    ImGui::Text("Distance: %s from the Sun", formatDistance(sunDistance).c_str());
-    if (rayTraced) ImGui::TextDisabled("Ray traced from %.0f Rs away", eyeDistance / rs);
+    if (!where.empty()) ImGui::TextUnformatted(where.c_str());
+    if (shot.rayTraced) ImGui::TextDisabled("Ray traced from %.0f Rs away", shot.eyeDistance / rs);
+    if (h.spin > 0.0) ImGui::TextDisabled("Drawn as a hole that doesn't spin");
     ImGui::EndTooltip();
-    return true;
 }
 
 void drawTag(const Camera& camera, const Vector3D& at, const char* text) {
@@ -469,6 +631,7 @@ int bodyAt(const std::vector<Body>& bodies, const Camera& camera, const SceneFra
     };
     std::vector<Hit> hits;
     for (std::size_t i = 0; i < bodies.size(); ++i) {
+        if (bodies[i].isBlackHole()) continue;
         const Vector3D w = frame.place(bodies[i].position);
         const std::optional<sf::Vector2f> p = camera.toScreen(w);
         if (!p) continue;
@@ -504,8 +667,11 @@ void drawBodyTooltip(const Simulation& sim, const Camera& camera, const SceneFra
     ImGui::BeginTooltip();
     ImGui::TextColored(ACCENT, "%s", b.isNamed() ? b.name.c_str() : kind.c_str());
     if (b.isNamed()) ImGui::TextDisabled("%s", kind.c_str());
-    ImGui::Text("Mass: %s", formatMass(b.mass).c_str());
-    ImGui::Text("Radius: %.0f km", b.radius * units::KM_PER_AU);
+    if (b.mass > 0.0)
+        ImGui::Text("Mass: %s", formatMass(b.mass).c_str());
+    else
+        ImGui::Text("Mass: not measured");
+    if (b.radius > 0.0) ImGui::Text("Radius: %.0f km", b.radius * units::KM_PER_AU);
 
     const int hostIndex = sim.dominantBody(b.position, hit);
     if (hostIndex >= 0) {

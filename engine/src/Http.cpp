@@ -105,7 +105,7 @@ bool get(const std::string& url, std::string& body, long& status, std::string& e
         body.resize(old + read);
     }
 
-    // An error status still counts as a reply, body says the error
+    // An error status is still a reply; the body explains it
     status = static_cast<long>(code);
     return true;
 }
@@ -121,20 +121,19 @@ bool get(const std::string& url, std::string& body, long& status, std::string& e
 namespace emma::http {
 
 namespace {
-// curl writes the HTTP status after the body
+// Marks where curl writes the HTTP status, after the body
 const std::string STATUS_MARKER = "\nEMMA_HTTP_STATUS:";
 }
 
 bool get(const std::string& url, std::string& body, long& status, std::string& error) {
     body.clear();
     status = 0;
-    // EMMA builds its URLs with every quote percent-encoded, so single quotes keep the shell out of it
+    // The address goes inside single quotes, so it can't contain one
     if (url.find('\'') != std::string::npos) {
         error = "unsupported character in the address";
         return false;
     }
-    // No --fail: that would throw away the body of an error reply, which usually
-    // explains the error. -w adds the status line that STATUS_MARKER finds
+    // -w adds the status line after the body
     const std::string command =
         "curl -sS --max-time 20 -w '\\nEMMA_HTTP_STATUS:%{http_code}\\n' '" + url + "' 2>&1";
     FILE* pipe = popen(command.c_str(), "r");
@@ -148,7 +147,7 @@ bool get(const std::string& url, std::string& body, long& status, std::string& e
     while ((n = std::fread(buffer.data(), 1, buffer.size(), pipe)) > 0) output.append(buffer.data(), n);
     const int exitCode = pclose(pipe);
 
-    // Cut out the status line, leaving the body exactly as sent
+    // Take the status line off the end
     const std::size_t at = output.rfind(STATUS_MARKER);
     if (at != std::string::npos) {
         const std::size_t digits = at + STATUS_MARKER.size();
@@ -158,7 +157,7 @@ bool get(const std::string& url, std::string& body, long& status, std::string& e
         output.erase(at, end == std::string::npos ? std::string::npos : end + 1 - at);
     }
 
-    // No reply at all: curl explains why in a line starting "curl: ("
+    // No reply: use curl's own error line
     if (exitCode != 0 || status == 0) {
         const std::size_t message = output.find("curl: (");
         error = message == std::string::npos ? output : output.substr(message);
